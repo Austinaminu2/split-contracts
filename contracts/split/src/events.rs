@@ -1932,6 +1932,26 @@ pub fn acquisition_registered(env: &Env, new_user: &Address, referrer: &Address)
     );
 }
 
+/// Issue #800: an admin froze all invoice payments and releases.
+/// Topics: (split, sys_pause)
+/// Data: admin
+pub fn invoice_system_paused(env: &Env, admin: &Address) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("sys_pause")),
+        admin.clone(),
+    );
+}
+
+/// Issue #800: an admin lifted the invoice-system emergency pause.
+/// Topics: (split, sys_resm)
+/// Data: admin
+pub fn invoice_system_resumed(env: &Env, admin: &Address) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("sys_resm")),
+        admin.clone(),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

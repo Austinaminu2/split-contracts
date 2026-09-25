@@ -8693,3 +8693,82 @@ fn test_792_self_referral_rejected() {
 
     c.register_acquisition(&user, &user);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #800: emergency pause of all invoices
+// ---------------------------------------------------------------------------
+
+/// Initialized contract with a known admin and one 200-unit invoice; the payer holds 500.
+fn setup_800() -> (Env, Address, Address, Address, Address, u64) {
+    let (env, contract_id, token_id) = setup();
+    let c = client(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &500);
+    env.ledger().set_timestamp(1_000);
+    c.initialize(
+        &admin,
+        &0_i128,
+        &Address::generate(&env),
+        &token_id,
+        &0_u32,
+        &None,
+        &0_u32,
+        &0_u32,
+        &0_u64,
+    );
+    let id = make_invoice(
+        &env,
+        &c,
+        &Address::generate(&env),
+        &Address::generate(&env),
+        200,
+        &token_id,
+        9_999,
+    );
+    (env, contract_id, token_id, admin, payer, id)
+}
+
+#[test]
+#[should_panic(expected = "contract is paused")]
+fn test_800_pause_all_invoices_blocks_pay() {
+    let (env, contract_id, _token_id, admin, payer, id) = setup_800();
+    let c = client(&env, &contract_id);
+
+    c.pause_all_invoices(&admin);
+    assert!(env.events().all().iter().any(|(_c, topics, _d)| topic1_is(
+        &env,
+        &topics,
+        "sys_pause"
+    )));
+    assert!(c.is_paused());
+
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+}
+
+#[test]
+fn test_800_resume_all_invoices_re_enables_pay() {
+    let (env, contract_id, _token_id, admin, payer, id) = setup_800();
+    let c = client(&env, &contract_id);
+
+    c.pause_all_invoices(&admin);
+    c.resume_all_invoices(&admin);
+    assert!(env
+        .events()
+        .all()
+        .iter()
+        .any(|(_c, topics, _d)| topic1_is(&env, &topics, "sys_resm")));
+    assert!(!c.is_paused());
+
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    assert_eq!(c.get_invoice(&id).funded, 100);
+}
+
+#[test]
+#[should_panic(expected = "NotAuthorized")]
+fn test_800_non_admin_cannot_pause_all_invoices() {
+    let (env, contract_id, _token_id, _admin, _payer, _id) = setup_800();
+    let c = client(&env, &contract_id);
+
+    c.pause_all_invoices(&Address::generate(&env));
+}

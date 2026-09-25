@@ -2955,6 +2955,20 @@ impl SplitContract {
         events::contract_unpaused(&env, &admin);
     }
 
+    /// Issue #800: emergency stop for every invoice. Admin-only; sets the
+    /// contract-wide pause flag that `pay`, `release` and `refund` check, so no
+    /// payment moves and nothing is released until `resume_all_invoices`.
+    pub fn pause_all_invoices(env: Env, admin: Address) {
+        Self::pause(env.clone(), admin.clone());
+        events::invoice_system_paused(&env, &admin);
+    }
+
+    /// Issue #800: lift an emergency stop set by `pause_all_invoices`. Admin-only.
+    pub fn resume_all_invoices(env: Env, admin: Address) {
+        Self::unpause(env.clone(), admin.clone());
+        events::invoice_system_resumed(&env, &admin);
+    }
+
     /// Issue #328: Return the current pause state (read-only; available while paused).
     pub fn is_paused(env: Env) -> bool {
         is_paused(&env)
