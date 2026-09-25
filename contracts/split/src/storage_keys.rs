@@ -216,6 +216,10 @@ pub enum InvoiceKey {
     /// Per-invoice event sequence counter — typed replacement for the former
     /// `(symbol_short!("ev_seq"), invoice_id)` inline key (issue #708).
     EvSeq(u64),
+    /// Issue #763: per-invoice history ring buffer — Vec<HistoryEntry>.
+    InvoiceHistory(u64),
+    /// Issue #760: per-invoice milestone list — Vec<Milestone>.
+    MilestoneData(u64),
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +394,8 @@ mod tests {
             InvoiceKey::PaidFlags(id), InvoiceKey::MilestoneFlags(id),
             InvoiceKey::ArchiveMarker(id), InvoiceKey::CreatedLedger(id),
             InvoiceKey::EvSeq(id),
+            InvoiceKey::InvoiceHistory(id),
+            InvoiceKey::MilestoneData(id),
         ];
         for i in 0..keys.len() {
             for j in (i + 1)..keys.len() {
@@ -524,5 +530,30 @@ pub fn tombstone_key(invoice_id: u64) -> (Symbol, u64) {
 /// old inline `(symbol_short!("ev_seq"), invoice_id)` tuple.
 pub fn ev_seq_key(invoice_id: u64) -> InvoiceKey {
     InvoiceKey::EvSeq(invoice_id)
+}
+
+// ---------------------------------------------------------------------------
+// Issue #763: Per-invoice history ring buffer key
+// ---------------------------------------------------------------------------
+
+/// Per-invoice history ring buffer — persistent storage.
+///
+/// Returns the [`InvoiceKey::InvoiceHistory`] variant for `invoice_id`.
+/// The stored value is a `Vec<HistoryEntry>` capped at
+/// [`types::HISTORY_RING_CAP`] entries.
+pub fn history_key(invoice_id: u64) -> InvoiceKey {
+    InvoiceKey::InvoiceHistory(invoice_id)
+}
+
+// ---------------------------------------------------------------------------
+// Issue #760: Per-invoice milestone list key
+// ---------------------------------------------------------------------------
+
+/// Per-invoice milestone list — persistent storage.
+///
+/// Returns the [`InvoiceKey::MilestoneData`] variant for `invoice_id`.
+/// The stored value is a `Vec<Milestone>`.
+pub fn milestone_data_key(invoice_id: u64) -> InvoiceKey {
+    InvoiceKey::MilestoneData(invoice_id)
 }
 

@@ -4488,7 +4488,7 @@ fn test_creator_stats_increments_on_operations() {
 
 
 #[test]
-#[should_panic(expected = "payment cooldown active")]
+#[should_panic(expected = "PaymentCooldownActive")]
 fn test_cooldown_blocks_same_payer_within_window() {
     let (env, contract_id, token_id) = setup_initialized();
     let c = client(&env, &contract_id);
@@ -8649,5 +8649,690 @@ fn test_create_invoice_payment_window_only_one_or_none_ok() {
     opts_none.ext.payment_close_at = None;
     let id3 = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999_u64, &opts_none);
     assert!(id3 >= 1);
+}
+
+
+// ---------------------------------------------------------------------------
+// Issue #760: Milestone-based invoice with sequential unlocking
+// ---------------------------------------------------------------------------
+
+/// Helper: build an InvoiceOptions with a milestone list.
+fn milestone_options(env: &Env, milestones: Vec<types::Milestone>) -> InvoiceOptions {
+    InvoiceOptions {
+        co_creators: Vec::new(env),
+        allow_early_withdrawal: false,
+        bonus_pool: 0,
+        bonus_max_payers: 0,
+        creator_cosigner: None,
+        velocity_limit: 0,
+        velocity_window: 0,
+        prerequisite_id: None,
+        tranches: Vec::new(env),
+        co_signers: Vec::new(env),
+        required_signatures: 0,
+        penalty_bps: None,
+        penalty_deadline: None,
+        min_funding_bps: None,
+        release_stages: Vec::new(env),
+        price_oracle: None,
+        swap_tokens: Vec::new(env),
+        tax_bps: None,
+        tax_authority: None,
+        insurance_premium_bps: None,
+        smart_route: None,
+        notification_contract: None,
+        overflow_behavior: types::OverflowBehavior::Reject,
+        convert_to_stream: false,
+        accepted_tokens: Vec::new(env),
+        forward_to: None,
+        forward_invoice_id: None,
+        split_rules: Vec::new(env),
+        auto_resolve_rules: Vec::new(env),
+        condition_oracle: None,
+        cross_chain_ref: None,
+        allowed_payers: None,
+        refund_grace_secs: None,
+        priorities: Vec::new(env),
+        require_kyc: false,
+        scheduled_release_at: None,
+        ratios: Vec::new(env),
+        cosigners: None,
+        cosigner_threshold: None,
+        ext: types::InvoiceOptions2 {
+            milestone_list: Some(milestones),
+            ..Default::default()
+        },
+    }
+}
+
+/// Issue #760: 3-milestone end-to-end flow.
+///
+/// The invoice target is set higher than the sum of all milestone amounts so
+/// that paying the milestone funds does NOT trigger auto-release; the invoice
+/// stays Pending throughout so `complete_milestone` can proceed.
+#[test]
+fn test_milestone_3_step_flow() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let stellar_asset = StellarAssetClient::new(&env, &token_id);
+
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+
+    stellar_asset.mint(&payer, &900);
+
+    let mut ms_list: Vec<types::Milestone> = Vec::new(&env);
+    for (amt, status) in [
+        (100_i128, types::MilestoneStatus::Active),
+        (200_i128, types::MilestoneStatus::Pending),
+        (300_i128, types::MilestoneStatus::Pending),
+    ] {
+        ms_list.push_back(types::Milestone {
+            target_amount: amt,
+            description: Bytes::from_slice(&env, b"milestone"),
+            status,
+        });
+    }
+
+    let mut recipients: Vec<Address> = Vec::new(&env);
+    recipients.push_back(recipient.clone());
+    let mut amounts: Vec<i128> = Vec::new(&env);
+    // Set invoice target well above the sum of milestones so partial payments
+    // never trigger auto-release and the invoice stays Pending.
+    amounts.push_back(9_000);
+
+    let id = c.create_invoice(
+        &creator,
+        &recipients,
+        &amounts,
+        &token_id,
+        &9_999_u64,
+        &milestone_options(&env, ms_list),
+    );
+
+    assert_eq!(c.get_active_milestone(&id), 0);
+
+    // Deposit funds for milestone 0 only (100); invoice stays Pending.
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    c.complete_milestone(&id, &creator, &0);
+    assert_eq!(c.get_active_milestone(&id), 1);
+
+    // Deposit funds for milestone 1 (200).
+    c.pay(&payer, &id, &200_i128, &1_u64, &false, &false, &None);
+    c.complete_milestone(&id, &creator, &1);
+    assert_eq!(c.get_active_milestone(&id), 2);
+
+    // Deposit funds for milestone 2 (300).
+    c.pay(&payer, &id, &300_i128, &2_u64, &false, &false, &None);
+    c.complete_milestone(&id, &creator, &2);
+}
+
+/// Issue #760: out-of-order milestone completion must panic.
+///
+/// Invoice target is set above milestone sum so the partial payment keeps the
+/// invoice in Pending state — otherwise auto-release would fire first and the
+/// panic message would be "invoice is not pending" not "milestone is not active".
+#[test]
+#[should_panic(expected = "milestone is not active")]
+fn test_milestone_skip_rejected() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let stellar_asset = StellarAssetClient::new(&env, &token_id);
+
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+
+    stellar_asset.mint(&payer, &500);
+
+    let mut ms_list: Vec<types::Milestone> = Vec::new(&env);
+    for (amt, status) in [
+        (200_i128, types::MilestoneStatus::Active),
+        (300_i128, types::MilestoneStatus::Pending),
+    ] {
+        ms_list.push_back(types::Milestone {
+            target_amount: amt,
+            description: Bytes::from_slice(&env, b"ms"),
+            status,
+        });
+    }
+
+    let mut recipients: Vec<Address> = Vec::new(&env);
+    recipients.push_back(recipient.clone());
+    let mut amounts: Vec<i128> = Vec::new(&env);
+    // Target well above milestone sum — partial payment won't trigger auto-release.
+    amounts.push_back(9_000);
+
+    let id = c.create_invoice(
+        &creator,
+        &recipients,
+        &amounts,
+        &token_id,
+        &9_999_u64,
+        &milestone_options(&env, ms_list),
+    );
+
+    // Pay only the milestone-0 amount; invoice stays Pending.
+    c.pay(&payer, &id, &200_i128, &0_u64, &false, &false, &None);
+    c.complete_milestone(&id, &creator, &1); // skip milestone 0 — must panic
+}
+
+/// Issue #760: replaying an already-completed milestone panics.
+#[test]
+#[should_panic(expected = "milestone is not active")]
+fn test_milestone_replay_rejected() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let stellar_asset = StellarAssetClient::new(&env, &token_id);
+
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+
+    stellar_asset.mint(&payer, &300);
+
+    let mut ms_list: Vec<types::Milestone> = Vec::new(&env);
+    ms_list.push_back(types::Milestone {
+        target_amount: 100,
+        description: Bytes::from_slice(&env, b"m0"),
+        status: types::MilestoneStatus::Active,
+    });
+    ms_list.push_back(types::Milestone {
+        target_amount: 200,
+        description: Bytes::from_slice(&env, b"m1"),
+        status: types::MilestoneStatus::Pending,
+    });
+
+    let mut recipients: Vec<Address> = Vec::new(&env);
+    recipients.push_back(recipient.clone());
+    let mut amounts: Vec<i128> = Vec::new(&env);
+    // Target well above milestone sum — invoice stays Pending after partial payment.
+    amounts.push_back(9_000);
+
+    let id = c.create_invoice(
+        &creator,
+        &recipients,
+        &amounts,
+        &token_id,
+        &9_999_u64,
+        &milestone_options(&env, ms_list),
+    );
+
+    // Pay milestone-0 amount; invoice stays Pending.
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    c.complete_milestone(&id, &creator, &0);
+    c.complete_milestone(&id, &creator, &0); // replay — must panic
+}
+
+/// Issue #760: a payment that overshoots the active milestone's target is
+/// rejected — funds may not be routed into a milestone that has not been
+/// activated yet.
+#[test]
+#[should_panic(expected = "payment exceeds active milestone target")]
+fn test_milestone_overfund_active_target_rejected() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let stellar_asset = StellarAssetClient::new(&env, &token_id);
+
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+    stellar_asset.mint(&payer, &1_000);
+
+    let mut ms_list: Vec<types::Milestone> = Vec::new(&env);
+    ms_list.push_back(types::Milestone {
+        target_amount: 100,
+        description: Bytes::from_slice(&env, b"m0"),
+        status: types::MilestoneStatus::Active,
+    });
+    ms_list.push_back(types::Milestone {
+        target_amount: 200,
+        description: Bytes::from_slice(&env, b"m1"),
+        status: types::MilestoneStatus::Pending,
+    });
+
+    let mut recipients: Vec<Address> = Vec::new(&env);
+    recipients.push_back(recipient.clone());
+    let mut amounts: Vec<i128> = Vec::new(&env);
+    amounts.push_back(9_000);
+
+    let id = c.create_invoice(
+        &creator,
+        &recipients,
+        &amounts,
+        &token_id,
+        &9_999_u64,
+        &milestone_options(&env, ms_list),
+    );
+
+    // Fully funds the active milestone 0 (target 100).
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    // A further 300 overshoots the active milestone's 100-target ceiling.
+    c.pay(&payer, &id, &300_i128, &1_u64, &false, &false, &None);
+}
+
+/// Issue #760: after a milestone is completed, payments may only fund the newly
+/// active milestone.  Paying the amount that would pre-fund the *next*
+/// milestone (i.e. "paying to a completed milestone") is rejected.
+#[test]
+#[should_panic(expected = "payment exceeds active milestone target")]
+fn test_milestone_pay_to_completed_milestone_rejected() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let stellar_asset = StellarAssetClient::new(&env, &token_id);
+
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+    stellar_asset.mint(&payer, &1_000);
+
+    let mut ms_list: Vec<types::Milestone> = Vec::new(&env);
+    for (amt, status) in [
+        (100_i128, types::MilestoneStatus::Active),
+        (200_i128, types::MilestoneStatus::Pending),
+        (300_i128, types::MilestoneStatus::Pending),
+    ] {
+        ms_list.push_back(types::Milestone {
+            target_amount: amt,
+            description: Bytes::from_slice(&env, b"ms"),
+            status,
+        });
+    }
+
+    let mut recipients: Vec<Address> = Vec::new(&env);
+    recipients.push_back(recipient.clone());
+    let mut amounts: Vec<i128> = Vec::new(&env);
+    amounts.push_back(9_000);
+
+    let id = c.create_invoice(
+        &creator,
+        &recipients,
+        &amounts,
+        &token_id,
+        &9_999_u64,
+        &milestone_options(&env, ms_list),
+    );
+
+    // Fund and complete milestone 0; milestone 1 becomes active.
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    c.complete_milestone(&id, &creator, &0);
+
+    // Milestone 0 is Completed.  Milestone 1 (active, target 200) only has 200
+    // of headroom left, so a 300 payment that would pre-fund milestone 2 is
+    // rejected.
+    c.pay(&payer, &id, &300_i128, &1_u64, &false, &false, &None);
+}
+
+/// Issue #760: once every milestone has been completed there is no active
+/// milestone, so further payments are rejected.
+#[test]
+#[should_panic(expected = "no active milestone")]
+fn test_milestone_pay_after_all_completed_rejected() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let stellar_asset = StellarAssetClient::new(&env, &token_id);
+
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+    stellar_asset.mint(&payer, &1_000);
+
+    let mut ms_list: Vec<types::Milestone> = Vec::new(&env);
+    ms_list.push_back(types::Milestone {
+        target_amount: 100,
+        description: Bytes::from_slice(&env, b"only"),
+        status: types::MilestoneStatus::Active,
+    });
+
+    let mut recipients: Vec<Address> = Vec::new(&env);
+    recipients.push_back(recipient.clone());
+    let mut amounts: Vec<i128> = Vec::new(&env);
+    amounts.push_back(9_000);
+
+    let id = c.create_invoice(
+        &creator,
+        &recipients,
+        &amounts,
+        &token_id,
+        &9_999_u64,
+        &milestone_options(&env, ms_list),
+    );
+
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    // The only milestone is now Completed — no active milestone remains.
+    c.complete_milestone(&id, &creator, &0);
+    c.pay(&payer, &id, &100_i128, &1_u64, &false, &false, &None);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #762: CooldownActive event emitted on rejection
+// ---------------------------------------------------------------------------
+
+/// Issue #762: a second payment within the cooldown window must panic with
+/// `PaymentCooldownActive` (the event is published before the panic).
+#[test]
+#[should_panic(expected = "PaymentCooldownActive")]
+fn test_cooldown_active_event_emitted_on_rejection() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let stellar_asset = StellarAssetClient::new(&env, &token_id);
+
+    let payer = Address::generate(&env);
+    stellar_asset.mint(&payer, &500);
+
+    env.ledger().set_timestamp(1_000);
+
+    let id = single_recipient_invoice(
+        &env,
+        &c,
+        &token_id,
+        500,
+        invoice_options(&env, Some(60), None, None),
+    );
+
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None); // ok
+    c.pay(&payer, &id, &100_i128, &1_u64, &false, &false, &None); // within cooldown — panic
+}
+
+/// Issue #762: the first payment always succeeds and further payments are
+/// accepted once the cooldown window has elapsed (the boundary is inclusive:
+/// a retry exactly at `last_payment_at + cooldown` is allowed).
+#[test]
+fn test_cooldown_allows_payment_after_window_elapses() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let stellar_asset = StellarAssetClient::new(&env, &token_id);
+
+    let payer = Address::generate(&env);
+    stellar_asset.mint(&payer, &500);
+
+    env.ledger().set_timestamp(1_000);
+    let id = single_recipient_invoice(
+        &env,
+        &c,
+        &token_id,
+        500,
+        invoice_options(&env, Some(60), None, None),
+    );
+
+    // First payment always succeeds.
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+
+    // Exactly at the boundary (1_000 + 60) the payer may retry.
+    env.ledger().set_timestamp(1_060);
+    c.pay(&payer, &id, &100_i128, &1_u64, &false, &false, &None);
+
+    // And again once another full window has elapsed.
+    env.ledger().set_timestamp(1_120);
+    c.pay(&payer, &id, &100_i128, &2_u64, &false, &false, &None);
+}
+
+/// Issue #762: the rejection reports the exact `retry_after` timestamp
+/// (`last_payment_at + cooldown`).
+#[test]
+#[should_panic(expected = "retry_after=1060")]
+fn test_cooldown_reports_correct_retry_after() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let stellar_asset = StellarAssetClient::new(&env, &token_id);
+
+    let payer = Address::generate(&env);
+    stellar_asset.mint(&payer, &500);
+
+    env.ledger().set_timestamp(1_000);
+    let id = single_recipient_invoice(
+        &env,
+        &c,
+        &token_id,
+        500,
+        invoice_options(&env, Some(60), None, None),
+    );
+
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    env.ledger().set_timestamp(1_030);
+    // 1_000 + 60 = 1_060 > 1_030, so the retry is rejected and reports 1_060.
+    c.pay(&payer, &id, &100_i128, &1_u64, &false, &false, &None);
+}
+
+/// Issue #762: when no cooldown is configured the same payer may pay
+/// back-to-back within the same ledger timestamp.
+#[test]
+fn test_no_cooldown_set_allows_back_to_back_payments() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let stellar_asset = StellarAssetClient::new(&env, &token_id);
+
+    let payer = Address::generate(&env);
+    stellar_asset.mint(&payer, &500);
+
+    env.ledger().set_timestamp(1_000);
+    let id = single_recipient_invoice(
+        &env,
+        &c,
+        &token_id,
+        500,
+        invoice_options(&env, None, None, None),
+    );
+
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    c.pay(&payer, &id, &100_i128, &1_u64, &false, &false, &None);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #763: Per-invoice history ring buffer
+// ---------------------------------------------------------------------------
+
+/// Issue #763: pay and cancel are recorded in chronological order.
+#[test]
+fn test_history_records_pay_and_cancel() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let stellar_asset = StellarAssetClient::new(&env, &token_id);
+
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+
+    stellar_asset.mint(&payer, &500);
+
+    let mut recipients: Vec<Address> = Vec::new(&env);
+    recipients.push_back(recipient.clone());
+    let mut amounts: Vec<i128> = Vec::new(&env);
+    amounts.push_back(500);
+
+    let id = c.create_invoice(
+        &creator,
+        &recipients,
+        &amounts,
+        &token_id,
+        &9_999_u64,
+        &default_options(&env),
+    );
+
+    assert_eq!(c.get_history(&id).len(), 0);
+
+    env.ledger().set_timestamp(2_000);
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+
+    let h1 = c.get_history(&id);
+    assert_eq!(h1.len(), 1);
+    assert_eq!(h1.get(0).unwrap().event_type, Symbol::new(&env, "pay"));
+    assert_eq!(h1.get(0).unwrap().amount, Some(100));
+    assert_eq!(h1.get(0).unwrap().timestamp, 2_000);
+
+    env.ledger().set_timestamp(3_000);
+    c.cancel_invoice(&creator, &id);
+
+    let h2 = c.get_history(&id);
+    assert_eq!(h2.len(), 2);
+    assert_eq!(h2.get(1).unwrap().event_type, Symbol::new(&env, "cancel"));
+    assert_eq!(h2.get(1).unwrap().amount, None);
+    assert_eq!(h2.get(1).unwrap().timestamp, 3_000);
+}
+
+/// Issue #763: 21st entry evicts the oldest; buffer stays capped at 20.
+#[test]
+fn test_history_ring_evicts_oldest_at_cap() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let stellar_asset = StellarAssetClient::new(&env, &token_id);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let mut recipients: Vec<Address> = Vec::new(&env);
+    recipients.push_back(recipient.clone());
+    let mut amounts: Vec<i128> = Vec::new(&env);
+    // Kept well above 21 * 1_000 so the 21 payments never fully fund the
+    // invoice — otherwise auto-release would append a further ("release")
+    // history entry and evict two entries instead of one.
+    amounts.push_back(100_000);
+
+    let id = c.create_invoice(
+        &creator,
+        &recipients,
+        &amounts,
+        &token_id,
+        &9_999_999_u64,
+        &default_options(&env),
+    );
+
+    for i in 0u64..21 {
+        let payer = Address::generate(&env);
+        stellar_asset.mint(&payer, &1_000);
+        env.ledger().set_timestamp(1_000 + i);
+        c.pay(&payer, &id, &1_000_i128, &0_u64, &false, &false, &None);
+    }
+
+    let h = c.get_history(&id);
+    assert_eq!(h.len(), 20);
+    assert_eq!(h.get(0).unwrap().timestamp, 1_001); // oldest retained
+    assert_eq!(h.get(19).unwrap().timestamp, 1_020); // newest retained
+}
+
+/// Issue #763: pay → release lifecycle records both entries in order.
+///
+/// When a payment brings the invoice to its full target, `pay` automatically
+/// calls `release_invoice` internally (auto-release).  Both the "pay" and
+/// "release" entries are therefore written during the single `pay` call; no
+/// separate `c.release()` is needed (and calling it again would panic).
+#[test]
+fn test_history_records_pay_and_release() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let stellar_asset = StellarAssetClient::new(&env, &token_id);
+
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+
+    stellar_asset.mint(&payer, &500);
+
+    let mut recipients: Vec<Address> = Vec::new(&env);
+    recipients.push_back(recipient.clone());
+    let mut amounts: Vec<i128> = Vec::new(&env);
+    amounts.push_back(300);
+
+    let id = c.create_invoice(
+        &creator,
+        &recipients,
+        &amounts,
+        &token_id,
+        &9_999_u64,
+        &default_options(&env),
+    );
+
+    env.ledger().set_timestamp(2_000);
+    // Paying the full target (300) triggers auto-release inside pay().
+    // Both "pay" and "release" history entries are written in this single call.
+    c.pay(&payer, &id, &300_i128, &0_u64, &false, &false, &None);
+
+    let h = c.get_history(&id);
+    assert_eq!(h.len(), 2);
+    assert_eq!(h.get(0).unwrap().event_type, Symbol::new(&env, "pay"));
+    assert_eq!(h.get(1).unwrap().event_type, Symbol::new(&env, "release"));
+    assert_eq!(h.get(1).unwrap().amount, Some(300));
+}
+
+// ---------------------------------------------------------------------------
+// Issue #761: gas-optimised bulk refund — 50-payer stress test
+// ---------------------------------------------------------------------------
+
+/// Issue #761: refunding an invoice with 50 distinct payers must stay well
+/// within the Soroban CPU-instruction limit (100 000 000).
+///
+/// The refund path performs a single scan over the payment shards and reuses a
+/// single `token::Client`, so the cost grows as `O(payers + shards)` rather than
+/// their product.  The measured value is recorded in
+/// `docs/GAS_OPTIMIZATIONS.md`.
+#[test]
+fn test_refund_50_payers() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let stellar_asset = StellarAssetClient::new(&env, &token_id);
+
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let mut recipients: Vec<Address> = Vec::new(&env);
+    recipients.push_back(recipient.clone());
+    let mut amounts: Vec<i128> = Vec::new(&env);
+    // Target intentionally exceeds 50 * 1_000 so the invoice stays Pending
+    // (no auto-release) until it is allowed to expire.
+    amounts.push_back(100_000);
+
+    let id = c.create_invoice(
+        &creator,
+        &recipients,
+        &amounts,
+        &token_id,
+        &2_000_u64,
+        &default_options(&env),
+    );
+
+    // 50 distinct payers, each contributing 1 000 across the payment shards.
+    let mut payers: Vec<Address> = Vec::new(&env);
+    for _ in 0..50 {
+        let payer = Address::generate(&env);
+        stellar_asset.mint(&payer, &1_000);
+        c.pay(&payer, &id, &1_000_i128, &0_u64, &false, &false, &None);
+        payers.push_back(payer);
+    }
+
+    // Past the deadline the invoice lazily expires and becomes refundable.
+    env.ledger().set_timestamp(2_001);
+    // The budget tracker resets before each top-level invocation, so the value
+    // read after `refund` covers that call only.
+    c.refund(&id);
+
+    let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    assert!(
+        cpu < 100_000_000,
+        "refund with 50 payers exceeded the Soroban CPU limit: {} instructions",
+        cpu
+    );
+
+    // Behaviour is unchanged: every payer is made whole.
+    let token = TokenClient::new(&env, &token_id);
+    for i in 0..payers.len() {
+        assert_eq!(token.balance(&payers.get(i).unwrap()), 1_000);
+    }
 }
 

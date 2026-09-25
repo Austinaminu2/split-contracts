@@ -1915,6 +1915,49 @@ pub fn deadline_extended(env: &Env, invoice_id: u64, old_deadline: u64, new_dead
 }
 
 // ---------------------------------------------------------------------------
+// Issue #762: Payment cooldown event
+// ---------------------------------------------------------------------------
+
+/// Emitted when a payment is blocked by the per-payer cooldown window.
+/// Topics: (split, cd_act, invoice_id)
+/// Data: (payer, retry_after)
+///
+/// `retry_after` is the Unix timestamp (seconds) after which the payer may
+/// try again.  Callers should subtract `env.ledger().timestamp()` to get
+/// the remaining wait in seconds.
+pub fn cooldown_active(env: &Env, invoice_id: u64, payer: &Address, retry_after: u64) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("cd_act"), invoice_id),
+        (payer.clone(), retry_after),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #760: Milestone events
+// ---------------------------------------------------------------------------
+
+/// Emitted when a milestone's funds are released by `complete_milestone`.
+/// Topics: (split, ms_done, invoice_id)
+/// Data: (index, amount_released)
+pub fn milestone_completed(env: &Env, invoice_id: u64, index: u32, amount_released: i128) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("ms_done"), invoice_id),
+        (index, amount_released),
+    );
+}
+
+/// Emitted when the next milestone becomes active after the previous one is
+/// completed.
+/// Topics: (split, ms_act, invoice_id)
+/// Data: index
+pub fn milestone_activated(env: &Env, invoice_id: u64, index: u32) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("ms_act"), invoice_id),
+        index,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests for the per-invoice event sequence counter (issue #708)
 // ---------------------------------------------------------------------------
 

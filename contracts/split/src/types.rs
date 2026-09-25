@@ -498,6 +498,11 @@ pub struct InvoiceOptions2 {
     pub payment_cooldown_secs: Option<u64>,
     /// Maximum payments allowed per window (issue #168).
     pub max_payments_per_window: Option<u32>,
+    /// Issue #760: ordered milestone list for sequentially-unlocked invoices.
+    /// Max 10 milestones.  When set, payments are only accepted for the
+    /// currently active milestone; calling `complete_milestone` releases the
+    /// active milestone's funds and activates the next one.
+    pub milestone_list: Option<Vec<Milestone>>,
     /// Window duration in seconds for payment rate limiting (issue #168).
     pub payment_window_secs: Option<u64>,
     /// Oracle contract used for oracle-priced invoices: the funding target is
@@ -589,6 +594,7 @@ impl Default for InvoiceOptions2 {
             creator_fee_bps: 0,
             early_bird_fee_credit: 0,
             ratio_denominator: 10_000,
+            milestone_list: None,
         }
     }
 }
@@ -915,6 +921,69 @@ impl InvoiceExt2 {
 pub struct PenaltyTier {
     pub seconds_after_deadline: u64,
     pub bps: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Issue #763: Per-invoice history ring buffer
+// ---------------------------------------------------------------------------
+
+/// A single entry in the per-invoice history ring buffer (issue #763).
+///
+/// Written on every state-changing operation: pay, release, refund, cancel,
+/// clone, milestone completion, and dispute events.  The buffer is capped at
+/// [`HISTORY_RING_CAP`] entries; the oldest entry is overwritten when the
+/// buffer is full.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct HistoryEntry {
+    /// Short description of the operation (e.g. `Symbol::new(env, "pay")`).
+    pub event_type: Symbol,
+    /// Unix timestamp from `env.ledger().timestamp()` at the time the entry
+    /// was written.
+    pub timestamp: u64,
+    /// The address that triggered the operation (payer, creator, etc.).
+    pub actor: Address,
+    /// Optional token amount involved (present for pay/refund/release, absent
+    /// for state-only transitions like dispute or cancel).
+    pub amount: Option<i128>,
+}
+
+/// Maximum number of entries the per-invoice history ring buffer retains.
+/// When the 21st entry is written the oldest (index 0) is evicted.
+pub const HISTORY_RING_CAP: u32 = 20;
+
+// ---------------------------------------------------------------------------
+// Issue #760: Milestone-based invoice with sequential unlocking
+// ---------------------------------------------------------------------------
+
+/// Lifecycle status of a single milestone (issue #760).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum MilestoneStatus {
+    /// Waiting for the previous milestone to complete before accepting funds.
+    Pending,
+    /// Currently accepting payments.
+    Active,
+    /// Fully funded; creator has called `complete_milestone` and funds were
+    /// released to recipients.
+    Completed,
+}
+
+/// A single milestone in a sequentially-unlocked invoice (issue #760).
+///
+/// Milestones are created via `InvoiceOptions::milestone_list` at invoice
+/// creation time and stored under `InvoiceKey::MilestoneData(invoice_id)`.
+/// Only the *active* milestone (determined by `get_active_milestone`) accepts
+/// payments; attempting to pay a completed or still-pending milestone panics.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Milestone {
+    /// Token amount that must be collected before this milestone is complete.
+    pub target_amount: i128,
+    /// Human-readable description stored as raw bytes (UTF-8 recommended).
+    pub description: Bytes,
+    /// Current lifecycle state.
+    pub status: MilestoneStatus,
 }
 
 /// Issue #475: Multi-signature admin set — replaces the single-admin model.

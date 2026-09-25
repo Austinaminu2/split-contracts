@@ -98,6 +98,7 @@ use types::{
     ProtocolFeeConfig, QueuedAction, RebateTier, Recipient, RepScore, ResolveAction,
     ResolveRule, Role, SimulateReleaseResult, SplitRule, SubscriptionParams, TimelockAction,
     Tombstone, Tranche, TransferRecord, TreasuryRecord, UpgradeProposal,
+    HistoryEntry, HISTORY_RING_CAP, Milestone, MilestoneStatus,
 };
 
 // ---------------------------------------------------------------------------
@@ -721,6 +722,18 @@ fn dashboard_contract_key() -> Symbol {
 /// Per-payer last-payment timestamp key for cooldown enforcement (issue #168).
 fn payer_cooldown_key(invoice_id: u64, payer: Address) -> (Symbol, u64, Address) {
     (symbol_short!("pyr_cd"), invoice_id, payer)
+}
+
+/// Issue #763: Per-invoice history ring buffer key — persistent storage.
+/// Stores a `Vec<HistoryEntry>` capped at [`HISTORY_RING_CAP`] entries.
+fn history_key(invoice_id: u64) -> storage_keys::InvoiceKey {
+    storage_keys::history_key(invoice_id)
+}
+
+/// Issue #760: Per-invoice milestone list key — persistent storage.
+/// Stores a `Vec<Milestone>` set at creation via `InvoiceOptions::milestone_list`.
+fn milestone_data_key(invoice_id: u64) -> storage_keys::InvoiceKey {
+    storage_keys::milestone_data_key(invoice_id)
 }
 
 /// Sliding-window payment timestamp list key for rate limiting (issue #168).
@@ -2174,6 +2187,87 @@ fn append_audit_entry(env: &Env, id: u64, action: Symbol, actor: &Address) {
     } else {
         env.storage().persistent().set(&audit_log_key(id), &log);
     }
+}
+
+/// Issue #763: Append an entry to the per-invoice history ring buffer.
+///
+/// The buffer is stored in persistent storage under [`history_key`] and is
+/// capped at [`HISTORY_RING_CAP`] (20) entries.  When the buffer is full the
+/// oldest entry (index 0) is evicted before the new one is appended, so the
+/// stored slice is always in chronological order.
+fn append_history_entry(
+    env: &Env,
+    invoice_id: u64,
+    event_type: Symbol,
+    actor: &Address,
+    amount: Option<i128>,
+) {
+    let key = history_key(invoice_id);
+    let mut buf: Vec<HistoryEntry> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    // Evict the oldest entry when the buffer is at capacity.
+    if buf.len() >= HISTORY_RING_CAP {
+        // Build a new vec without the first element to stay no_std compatible.
+        let mut trimmed: Vec<HistoryEntry> = Vec::new(env);
+        for i in 1..buf.len() {
+            trimmed.push_back(buf.get(i).unwrap());
+        }
+        buf = trimmed;
+    }
+    buf.push_back(HistoryEntry {
+        event_type,
+        timestamp: env.ledger().timestamp(),
+        actor: actor.clone(),
+        amount,
+    });
+    env.storage().persistent().set(&key, &buf);
+}
+
+/// Issue #760: Enforce sequential milestone gating on a payment.
+///
+/// When `invoice_id` has a milestone list configured, only the currently
+/// *active* milestone may receive funds.  The cumulative amount collected may
+/// never exceed the sum of the completed milestones' targets plus the active
+/// milestone's target, and a payment is rejected outright once every milestone
+/// has been completed.  This prevents a payer from funding a later milestone
+/// before its predecessor has been released.
+///
+/// Invoices without a milestone list are unaffected and return immediately.
+fn enforce_milestone_payment(env: &Env, invoice_id: u64, invoice: &Invoice, amount: i128) {
+    let key = milestone_data_key(invoice_id);
+    let milestones: Vec<Milestone> = match env.storage().persistent().get(&key) {
+        Some(list) => list,
+        None => return,
+    };
+
+    let mut active_target: Option<i128> = None;
+    let mut completed_target_sum: i128 = 0;
+    for i in 0..milestones.len() {
+        let milestone = milestones.get(i).unwrap();
+        match milestone.status {
+            MilestoneStatus::Completed => {
+                completed_target_sum =
+                    completed_target_sum.saturating_add(milestone.target_amount);
+            }
+            MilestoneStatus::Active => {
+                if active_target.is_none() {
+                    active_target = Some(milestone.target_amount);
+                }
+            }
+            MilestoneStatus::Pending => {}
+        }
+    }
+
+    // Every milestone is completed — there is nothing left to fund.
+    let active_target = active_target.expect("no active milestone");
+    let ceiling = completed_target_sum.saturating_add(active_target);
+    assert!(
+        invoice.funded.saturating_add(amount) <= ceiling,
+        "payment exceeds active milestone target"
+    );
 }
 
 fn notify_invoice(
@@ -3633,6 +3727,8 @@ impl SplitContract {
         events::invoice_state_changed(&env, invoice_id, Some(&InvoiceStatus::Pending),
             &InvoiceStatus::Disputed, &disputer);
         append_audit_entry(&env, invoice_id, symbol_short!("inv_disp"), &disputer);
+        // Issue #763: record the dispute in the per-invoice history ring buffer.
+        append_history_entry(&env, invoice_id, Symbol::new(&env, "dispute"), &disputer, None);
     }
 
     /// Admin-only resolution of a dispute before timeout.
@@ -3687,6 +3783,8 @@ impl SplitContract {
             }
         }
         append_audit_entry(&env, invoice_id, symbol_short!("disp_res"), &admin);
+        // Issue #763: record the dispute resolution in the per-invoice history ring buffer.
+        append_history_entry(&env, invoice_id, Symbol::new(&env, "dispute"), &admin, None);
     }
 
     /// Permissionless close of a dispute after the timeout has elapsed.
@@ -3710,6 +3808,14 @@ impl SplitContract {
         events::invoice_state_changed(&env, invoice_id, Some(&InvoiceStatus::Disputed),
             &InvoiceStatus::Pending, &env.current_contract_address());
         append_audit_entry(&env, invoice_id, symbol_short!("disp_cls"), &env.current_contract_address());
+        // Issue #763: record the dispute close in the per-invoice history ring buffer.
+        append_history_entry(
+            &env,
+            invoice_id,
+            Symbol::new(&env, "dispute"),
+            &env.current_contract_address(),
+            None,
+        );
     }
 
     /// Raise a dispute on an invoice. Only the configured arbiter may call this.
@@ -3732,6 +3838,8 @@ impl SplitContract {
         invoice.disputed = true;
         save_invoice(&env, invoice_id, &invoice);
         append_audit_entry(&env, invoice_id, symbol_short!("dispute"), &arbiter);
+        // Issue #763: record the dispute in the per-invoice history ring buffer.
+        append_history_entry(&env, invoice_id, Symbol::new(&env, "dispute"), &arbiter, None);
     }
 
     /// Resolve a dispute — release or refund the invoice.
@@ -3746,6 +3854,11 @@ impl SplitContract {
             "not the designated arbiter"
         );
         assert!(invoice.disputed, "invoice is not disputed");
+
+        // Issue #763: record the dispute resolution in the per-invoice history
+        // ring buffer.  Any panic in the match below reverts this write, so the
+        // entry only persists for a successful resolution.
+        append_history_entry(&env, invoice_id, Symbol::new(&env, "dispute"), &arbiter, None);
 
         match resolution {
             ResolveAction::Release => {
@@ -5193,6 +5306,22 @@ impl SplitContract {
 
         apply_overfunding_policy(&env, id, overfunding_policy);
         apply_cosigner_config(&env, id, cosigners, cosigner_threshold);
+
+        // Issue #760: persist milestone list when provided.
+        // At most 10 milestones are allowed.  The first milestone starts Active;
+        // all subsequent ones start Pending.
+        if let Some(mut ms_list) = options.ext.milestone_list {
+            assert!(ms_list.len() <= 10, "max 10 milestones allowed");
+            assert!(!ms_list.is_empty(), "milestone list must not be empty");
+            // Activate the first milestone.
+            let first = ms_list.get(0).unwrap();
+            ms_list.set(0, Milestone { status: MilestoneStatus::Active, ..first });
+            env.storage()
+                .persistent()
+                .set(&milestone_data_key(id), &ms_list);
+            events::milestone_activated(&env, id, 0);
+        }
+
         id
     }
 
@@ -6530,6 +6659,14 @@ impl SplitContract {
             env.storage().persistent().set(&metadata_hash_key(id), &hash);
         }
         events::invoice_cloned(&env, source_id, id);
+        // Issue #763: record this clone in the new invoice's history ring buffer.
+        append_history_entry(
+            &env,
+            id,
+            Symbol::new(&env, "clone"),
+            &creator,
+            None,
+        );
 
         // Index each recipient -> invoice ID.
         for recipient in recipients.iter() {
@@ -7095,6 +7232,10 @@ impl SplitContract {
         // Issue #483: reject zero or negative payment amounts.
         guard_nonzero_amount(amount).expect("ZeroAmountNotAllowed");
 
+        // Issue #760: enforce sequential milestone gating before any funds move.
+        // Only the currently active milestone may receive payments.
+        enforce_milestone_payment(env, invoice_id, &invoice, amount);
+
         // Issue #430: creator-defined payment window.
         if let Some(open_at) = get_payment_open_at_internal(env, invoice_id) {
             assert!(env.ledger().timestamp() >= open_at, "PaymentWindowNotOpen");
@@ -7569,6 +7710,15 @@ impl SplitContract {
         Self::record_invoice_rate_limit(env, invoice_id, payer);
         // Record rate-limiter timestamps after successful payment (issue #168).
         Self::record_payment_limits(env, invoice_id, payer, &invoice, now_ts);
+
+        // Issue #763: record this payment in the per-invoice history ring buffer.
+        append_history_entry(
+            env,
+            invoice_id,
+            Symbol::new(env, "pay"),
+            payer,
+            Some(credited_amount),
+        );
 
         // Issue: mint a receipt token to the payer via the receipt factory if configured.
         if let Some(factory) = env
@@ -9688,6 +9838,14 @@ impl SplitContract {
                 invoice.insurance_fund = 0;
             }
             append_audit_entry(env, invoice_id, symbol_short!("release"), actor);
+            // Issue #763: record this release in the per-invoice history ring buffer.
+            append_history_entry(
+                env,
+                invoice_id,
+                Symbol::new(env, "release"),
+                actor,
+                Some(invoice.funded),
+            );
             events::invoice_released(env, invoice_id, &invoice.recipients);
             events::invoice_state_changed(
                 env,
@@ -10789,6 +10947,18 @@ impl SplitContract {
         }
         save_invoice(env, invoice_id, invoice);
         append_audit_entry(env, invoice_id, symbol_short!("release"), actor);
+        // Issue #763: record this release in the per-invoice history ring buffer.
+        // This covers the auto-release path (invoked from `pay` on full funding);
+        // the explicit `release()` path writes its own entry via `_release_invoice_inner`.
+        if !has_failed_payouts {
+            append_history_entry(
+                env,
+                invoice_id,
+                Symbol::new(env, "release"),
+                actor,
+                Some(funded),
+            );
+        }
         events::invoice_released(env, invoice_id, &invoice.recipients);
         if !has_failed_payouts {
             events::invoice_state_changed(
@@ -11114,6 +11284,18 @@ impl SplitContract {
     /// also lazily expires a `Pending` invoice whose deadline (plus any
     /// `refund_grace_secs`) has passed — callers should not have to make a
     /// separate `notify_expired` call just to unlock their funds.
+    ///
+    /// # Gas optimisation (issue #761)
+    ///
+    /// The implementation performs a **single storage scan** over all payment
+    /// shards to aggregate per-payer totals into two in-memory maps (`totals`
+    /// and `donate_totals`) before issuing any token transfers.  A single
+    /// `token::Client` instance is created once and reused for every transfer,
+    /// avoiding the per-recipient client-construction overhead that would apply
+    /// if the client were re-created inside the loop.  This keeps compute-unit
+    /// consumption O(shards + payers) rather than O(shards × payers).
+    ///
+    /// See `docs/GAS_OPTIMIZATIONS.md` for benchmarks.
     pub fn refund(env: Env, invoice_id: u64) {
         // --- Reentrancy guard (issue #451-reentrancy) ---
         let re_key = reentrancy_lock_key();
@@ -11209,6 +11391,14 @@ impl SplitContract {
         save_invoice(&env, invoice_id, &invoice);
         let actor = env.current_contract_address();
         append_audit_entry(&env, invoice_id, symbol_short!("refund"), &actor);
+        // Issue #763: record this refund in the per-invoice history ring buffer.
+        append_history_entry(
+            &env,
+            invoice_id,
+            Symbol::new(&env, "refund"),
+            &actor,
+            Some(total_refunded_amount),
+        );
         events::invoice_refunded(&env, invoice_id, total_refunded_amount);
         events::invoice_state_changed(
             &env,
@@ -11862,6 +12052,14 @@ impl SplitContract {
 
         save_invoice(&env, invoice_id, &invoice);
         append_audit_entry(&env, invoice_id, symbol_short!("cancel"), &caller);
+        // Issue #763: record this cancellation in the per-invoice history ring buffer.
+        append_history_entry(
+            &env,
+            invoice_id,
+            Symbol::new(&env, "cancel"),
+            &caller,
+            None,
+        );
 
         // Issue: increment per-creator cancel count for cancellation rate tracking.
         let cnl_cnt: u64 = env
@@ -12640,6 +12838,19 @@ impl SplitContract {
 
     pub fn get_audit_log(env: Env, invoice_id: u64) -> Vec<AuditEntry> {
         get_audit_log(&env, invoice_id)
+    }
+
+    /// Issue #763: Return the per-invoice history ring buffer in chronological order.
+    ///
+    /// Returns up to [`HISTORY_RING_CAP`] (20) entries.  The oldest entries
+    /// are evicted first when the buffer is full, so the returned slice always
+    /// represents the most recent state changes.  Returns an empty vec if no
+    /// history has been written yet.
+    pub fn get_history(env: Env, invoice_id: u64) -> Vec<HistoryEntry> {
+        env.storage()
+            .persistent()
+            .get(&history_key(invoice_id))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Issue #681: Return how much `recipient` has already withdrawn from
@@ -13506,10 +13717,14 @@ impl SplitContract {
                 .get(&payer_cooldown_key(invoice_id, payer.clone()));
 
             if let Some(last_payment_at) = last_payment {
-                assert!(
-                    last_payment_at.saturating_add(cooldown_secs) <= now,
-                    "payment cooldown active"
-                );
+                let retry_after = last_payment_at.saturating_add(cooldown_secs);
+                if retry_after > now {
+                    // Issue #762: emit the CooldownActive event before panicking
+                    // so indexers can observe the rejection without consuming
+                    // resources reconstructing the cooldown state from storage.
+                    events::cooldown_active(env, invoice_id, payer, retry_after);
+                    panic!("PaymentCooldownActive: retry_after={}", retry_after);
+                }
             }
         }
 
@@ -14244,6 +14459,8 @@ impl SplitContract {
 
         events::dispute_raised(&env, invoice_id, &payer, &reason_hash);
         append_audit_entry(&env, invoice_id, symbol_short!("disp_rse"), &payer);
+        // Issue #763: record the payer dispute in the per-invoice history ring buffer.
+        append_history_entry(&env, invoice_id, Symbol::new(&env, "dispute"), &payer, None);
     }
 
     /// Resolve a payer dispute. Only the admin may call this.
@@ -14270,6 +14487,11 @@ impl SplitContract {
             record.status == DisputeStatus::Active,
             "dispute is not active"
         );
+
+        // Issue #763: record the dispute resolution in the per-invoice history
+        // ring buffer.  Any panic in the match below reverts this write, so the
+        // entry only persists for a successful resolution.
+        append_history_entry(&env, invoice_id, Symbol::new(&env, "dispute"), &admin_addr, None);
 
         match outcome {
             DisputeOutcome::Approved => {
@@ -14399,6 +14621,8 @@ impl SplitContract {
         events::dispute_expired(&env, invoice_id);
         let actor = env.current_contract_address();
         append_audit_entry(&env, invoice_id, symbol_short!("disp_exp"), &actor);
+        // Issue #763: record the dispute expiry in the per-invoice history ring buffer.
+        append_history_entry(&env, invoice_id, Symbol::new(&env, "dispute"), &actor, None);
         Self::_release(&env, invoice_id, &mut invoice, &actor);
     }
 
@@ -15845,6 +16069,128 @@ impl SplitContract {
         } else {
             ((invoice.funded * 10_000) / total) as u32
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #760: Milestone-based sequential unlocking
+    // -----------------------------------------------------------------------
+
+    /// Return the index of the currently active milestone, or panic if no
+    /// milestone list is configured on this invoice.
+    ///
+    /// The active milestone is the first entry in the milestone list whose
+    /// status is [`MilestoneStatus::Active`].  Returns the u32 index (0-based)
+    /// so callers can use it with `complete_milestone`.
+    pub fn get_active_milestone(env: Env, invoice_id: u64) -> u32 {
+        let milestones: Vec<Milestone> = env
+            .storage()
+            .persistent()
+            .get(&milestone_data_key(invoice_id))
+            .expect("no milestone list for this invoice");
+        for i in 0..milestones.len() {
+            let m = milestones.get(i).unwrap();
+            if m.status == MilestoneStatus::Active {
+                return i;
+            }
+        }
+        panic!("no active milestone");
+    }
+
+    /// Release the funds collected for milestone `index` and activate the
+    /// next milestone (if any).
+    ///
+    /// Only the invoice creator may call this.  The milestone at `index` must
+    /// be the currently *active* one — out-of-order completion is rejected.
+    /// After funds are transferred to recipients, the milestone is marked
+    /// [`MilestoneStatus::Completed`] and the subsequent milestone transitions
+    /// from `Pending` → `Active` (emitting [`MilestoneActivated`]).
+    ///
+    /// # Emits
+    /// * [`events::milestone_completed`] — index and amount released.
+    /// * [`events::milestone_activated`] — index of the newly active milestone.
+    pub fn complete_milestone(env: Env, invoice_id: u64, creator: Address, index: u32) {
+        require_not_paused(&env);
+        creator.require_auth();
+
+        let invoice = load_invoice(&env, invoice_id);
+        assert!(invoice.creator == creator, "not invoice creator");
+        assert!(
+            invoice.status == InvoiceStatus::Pending,
+            "invoice is not pending"
+        );
+
+        let key = milestone_data_key(invoice_id);
+        let mut milestones: Vec<Milestone> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("no milestone list for this invoice");
+
+        assert!(
+            (index as usize) < milestones.len().try_into().unwrap(),
+            "milestone index out of range"
+        );
+
+        let active = milestones.get(index).unwrap();
+        assert!(
+            active.status == MilestoneStatus::Active,
+            "milestone is not active — complete milestones in order"
+        );
+
+        // Transfer the milestone's target_amount to recipients (pro-rata by amounts[]).
+        let total_amounts: i128 = invoice.amounts.iter().sum();
+        let amount_to_release = active.target_amount;
+        let token_client = token::Client::new(&env, &invoice.tokens.get(0).expect("no token"));
+
+        if total_amounts > 0 && amount_to_release > 0 {
+            for i in 0..invoice.recipients.len() {
+                let recipient = invoice.recipients.get(i).unwrap();
+                let share = invoice.amounts.get(i).unwrap_or(0);
+                let payout = amount_to_release
+                    .checked_mul(share)
+                    .expect("overflow")
+                    / total_amounts;
+                if payout > 0 {
+                    token_client.transfer(
+                        &env.current_contract_address(),
+                        &recipient,
+                        &payout,
+                    );
+                }
+            }
+        }
+
+        // Mark this milestone completed.
+        let completed = Milestone {
+            status: MilestoneStatus::Completed,
+            ..active
+        };
+        milestones.set(index, completed);
+
+        // Activate the next milestone, if any.
+        let next_index = index + 1;
+        if (next_index as usize) < milestones.len().try_into().unwrap() {
+            let next = milestones.get(next_index).unwrap();
+            let activated = Milestone {
+                status: MilestoneStatus::Active,
+                ..next
+            };
+            milestones.set(next_index, activated);
+            events::milestone_activated(&env, invoice_id, next_index);
+        }
+
+        env.storage().persistent().set(&key, &milestones);
+
+        // Issue #763: record milestone completion in history ring buffer.
+        append_history_entry(
+            &env,
+            invoice_id,
+            Symbol::new(&env, "milestone"),
+            &creator,
+            Some(amount_to_release),
+        );
+
+        events::milestone_completed(&env, invoice_id, index, amount_to_release);
     }
 }
 
