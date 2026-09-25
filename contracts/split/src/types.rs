@@ -1891,6 +1891,14 @@ pub enum AutoReleaseCondition {
     AtTimestamp(u64),
 }
 
+/// Issue #810: aggregate on-chain performance metrics for a recipient.
+#[contracttype]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RecipientMetrics {
+    /// Number of released invoices that listed this address as a recipient.
+    pub invoices_received_count: u32,
+}
+
 
 #[cfg(test)]
 mod tests {

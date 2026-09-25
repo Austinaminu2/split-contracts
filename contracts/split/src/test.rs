@@ -8764,3 +8764,45 @@ fn test_809_auto_release_timestamp_in_past_rejected() {
     let id = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 9_999);
     c.set_auto_release_condition(&creator, &id, &AutoReleaseCondition::AtTimestamp(1_000));
 }
+
+// ---------------------------------------------------------------------------
+// Issue #810: recipient performance metrics
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_810_recipient_metrics_count_released_invoices() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1_000);
+    env.ledger().set_timestamp(1_000);
+
+    assert_eq!(c.get_recipient_metrics(&recipient).invoices_received_count, 0);
+
+    let first = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 9_999);
+    c.pay(&payer, &first, &100_i128, &0_u64, &false, &false, &None);
+    assert_eq!(c.get_recipient_metrics(&recipient).invoices_received_count, 1);
+
+    let second = make_invoice(&env, &c, &creator, &recipient, 200, &token_id, 9_999);
+    c.pay(&payer, &second, &200_i128, &0_u64, &false, &false, &None);
+    assert_eq!(c.get_recipient_metrics(&recipient).invoices_received_count, 2);
+}
+
+#[test]
+fn test_810_unreleased_invoice_does_not_count() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1_000);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(&env, &c, &creator, &recipient, 300, &token_id, 9_999);
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Pending);
+    assert_eq!(c.get_recipient_metrics(&recipient).invoices_received_count, 0);
+}

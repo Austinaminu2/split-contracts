@@ -98,7 +98,7 @@ use types::{
     ProtocolFeeConfig, QueuedAction, RebateTier, Recipient, RepScore, ResolveAction,
     ResolveRule, Role, SimulateReleaseResult, SplitRule, SubscriptionParams, TimelockAction,
     Tombstone, Tranche, TransferRecord, TreasuryRecord, UpgradeProposal,
-    AutoReleaseCondition,
+    AutoReleaseCondition, RecipientMetrics,
 };
 
 // ---------------------------------------------------------------------------
@@ -212,6 +212,10 @@ fn funded_at_ledger_key(id: u64) -> (Symbol, u64) {
 fn auto_release_condition_key(id: u64) -> (Symbol, u64) {
     (symbol_short!("auto_cnd"), id)
 }
+/// Issue #810: aggregate performance metrics for a recipient.
+fn recipient_metrics_key(recipient: &Address) -> (Symbol, Address) {
+    (symbol_short!("rcp_met"), recipient.clone())
+}
 
 /// Issue #809: whether the invoice's auto-release condition (if any) is met.
 /// `None` when no condition is set.
@@ -222,6 +226,21 @@ fn auto_release_condition_met(env: &Env, invoice_id: u64) -> Option<bool> {
         .map(|condition| match condition {
             AutoReleaseCondition::AtTimestamp(at) => env.ledger().timestamp() >= at,
         })
+}
+
+/// Issue #810: count one more released invoice for each distinct recipient.
+fn record_recipient_release(env: &Env, recipients: &Vec<Address>) {
+    let mut seen: Vec<Address> = Vec::new(env);
+    for recipient in recipients.iter() {
+        if seen.contains(&recipient) {
+            continue;
+        }
+        seen.push_back(recipient.clone());
+        let key = recipient_metrics_key(&recipient);
+        let mut metrics: RecipientMetrics = env.storage().persistent().get(&key).unwrap_or_default();
+        metrics.invoices_received_count = metrics.invoices_received_count.saturating_add(1);
+        env.storage().persistent().set(&key, &metrics);
+    }
 }
 /// Issue #329: off-chain metadata hash for an invoice.
 fn metadata_hash_key(id: u64) -> (Symbol, u64) {
@@ -8423,6 +8442,15 @@ impl SplitContract {
         events::auto_release_triggered(&env, invoice_id, env.ledger().timestamp());
     }
 
+    /// Issue #810: aggregate performance metrics for a recipient (zeroed if
+    /// the address has never been paid out).
+    pub fn get_recipient_metrics(env: Env, recipient: Address) -> RecipientMetrics {
+        env.storage()
+            .persistent()
+            .get(&recipient_metrics_key(&recipient))
+            .unwrap_or_default()
+    }
+
     /// Lock a recipient's share for an invoice (admin-only).
     /// Locked recipients are skipped during release and their share is accumulated
     /// in `UnreleasedFunds`. Returns `RecipientNotFound` if the recipient is not in
@@ -8513,10 +8541,15 @@ impl SplitContract {
         if invoice.status == InvoiceStatus::Disputed {
             panic!("{}", ContractError::InvoiceDisputed as u32);
         }
+        let was_released = invoice.status == InvoiceStatus::Released;
         if invoice.tranches.is_empty() {
             Self::_release_full(env, invoice_id, invoice, actor);
         } else {
             Self::_release_tranches(env, invoice_id, invoice, actor);
+        }
+        // Issue #810: update recipient metrics once, when the invoice becomes Released.
+        if !was_released && invoice.status == InvoiceStatus::Released {
+            record_recipient_release(env, &invoice.recipients);
         }
     }
 
