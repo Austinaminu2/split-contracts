@@ -11091,6 +11091,16 @@ impl SplitContract {
         );
         assert!(bps <= 10_000, "bps must be ≤ 10000");
         assert!(invoice.funded > 0, "no funds to refund");
+        // Issue #801: only while the invoice is still collecting — before its
+        // deadline and before it is fully funded.
+        assert!(
+            env.ledger().timestamp() < invoice.deadline,
+            "invoice deadline has passed"
+        );
+        assert!(
+            invoice.funded < invoice.amounts.iter().sum::<i128>(),
+            "invoice is fully funded"
+        );
 
         let token_client = token::Client::new(&env, &invoice.tokens.get(0).expect("no token"));
 

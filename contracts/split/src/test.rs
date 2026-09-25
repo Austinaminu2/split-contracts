@@ -8772,3 +8772,91 @@ fn test_800_non_admin_cannot_pause_all_invoices() {
 
     c.pause_all_invoices(&Address::generate(&env));
 }
+
+// ---------------------------------------------------------------------------
+// Issue #801: partial refund guards
+// ---------------------------------------------------------------------------
+
+/// A 300-unit invoice (deadline 9_999) paid by one fresh payer per entry in
+/// `payments`. A future `scheduled_release_at` keeps a fully funded invoice
+/// Pending instead of auto-releasing, so the fully-funded guard can be exercised.
+fn setup_801(payments: &[i128]) -> (Env, Address, Address, Address, Vec<Address>, u64) {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+
+    let mut recipients = Vec::new(&env);
+    recipients.push_back(Address::generate(&env));
+    let mut amounts = Vec::new(&env);
+    amounts.push_back(300_i128);
+    let opts = InvoiceOptions {
+        scheduled_release_at: Some(5_000),
+        ..default_options(&env)
+    };
+    let id = c.create_invoice(
+        &creator,
+        &recipients,
+        &amounts,
+        &token_id,
+        &9_999_u64,
+        &opts,
+    );
+
+    let mut payers = Vec::new(&env);
+    for amount in payments {
+        let payer = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&payer, amount);
+        c.pay(&payer, &id, amount, &0_u64, &false, &false, &None);
+        payers.push_back(payer);
+    }
+    (env, contract_id, token_id, creator, payers, id)
+}
+
+#[test]
+fn test_801_partial_refund_returns_share_to_each_payer() {
+    let (env, contract_id, token_id, creator, payers, id) = setup_801(&[100, 100]);
+    let c = client(&env, &contract_id);
+    let tk = token_client(&env, &token_id);
+
+    c.partial_refund(&creator, &id, &2_500_u32);
+
+    assert_eq!(tk.balance(&payers.get(0).unwrap()), 25);
+    assert_eq!(tk.balance(&payers.get(1).unwrap()), 25);
+    assert_eq!(c.get_invoice(&id).funded, 150);
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Pending);
+}
+
+#[test]
+fn test_801_multiple_partial_refunds() {
+    let (env, contract_id, token_id, creator, payers, id) = setup_801(&[100, 100]);
+    let c = client(&env, &contract_id);
+    let tk = token_client(&env, &token_id);
+
+    c.partial_refund(&creator, &id, &1_000_u32);
+    c.partial_refund(&creator, &id, &1_000_u32);
+
+    assert_eq!(tk.balance(&payers.get(0).unwrap()), 20);
+    assert_eq!(tk.balance(&payers.get(1).unwrap()), 20);
+    assert_eq!(c.get_invoice(&id).funded, 160);
+}
+
+#[test]
+#[should_panic(expected = "invoice deadline has passed")]
+fn test_801_partial_refund_after_deadline_rejected() {
+    let (env, contract_id, _token_id, creator, _payers, id) = setup_801(&[100]);
+    let c = client(&env, &contract_id);
+
+    env.ledger().set_timestamp(9_999);
+    c.partial_refund(&creator, &id, &5_000_u32);
+}
+
+#[test]
+#[should_panic(expected = "invoice is fully funded")]
+fn test_801_partial_refund_of_fully_funded_invoice_rejected() {
+    let (env, contract_id, _token_id, creator, _payers, id) = setup_801(&[100, 100, 100]);
+    let c = client(&env, &contract_id);
+
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Pending);
+    c.partial_refund(&creator, &id, &5_000_u32);
+}
