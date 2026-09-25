@@ -1882,6 +1882,15 @@ pub struct PaymentRecord {
     pub ledger: u32,
 }
 
+/// Issue #809: condition under which anyone may release an invoice through
+/// `trigger_auto_release`, without a manual `release` call by the creator.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AutoReleaseCondition {
+    /// Releasable once the ledger timestamp reaches this value (unix seconds).
+    AtTimestamp(u64),
+}
+
 
 #[cfg(test)]
 mod tests {

@@ -8651,3 +8651,116 @@ fn test_create_invoice_payment_window_only_one_or_none_ok() {
     assert!(id3 >= 1);
 }
 
+
+// ---------------------------------------------------------------------------
+// Issue #809: auto-release conditions
+// ---------------------------------------------------------------------------
+
+/// Fully funded invoice with an `AtTimestamp(release_at)` auto-release condition.
+fn funded_invoice_with_auto_release(
+    env: &Env,
+    c: &SplitContractClient,
+    token_id: &Address,
+    recipient: &Address,
+    release_at: u64,
+) -> u64 {
+    let creator = Address::generate(env);
+    let payer = Address::generate(env);
+    StellarAssetClient::new(env, token_id).mint(&payer, &100);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(env, c, &creator, recipient, 100, token_id, 9_999);
+    c.set_auto_release_condition(&creator, &id, &AutoReleaseCondition::AtTimestamp(release_at));
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    id
+}
+
+#[test]
+fn test_809_auto_release_holds_funds_until_condition_met() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let recipient = Address::generate(&env);
+
+    let id = funded_invoice_with_auto_release(&env, &c, &token_id, &recipient, 5_000);
+
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Pending);
+    assert_eq!(token_client(&env, &token_id).balance(&recipient), 0);
+    assert_eq!(
+        c.get_auto_release_condition(&id),
+        Some(AutoReleaseCondition::AtTimestamp(5_000))
+    );
+}
+
+#[test]
+#[should_panic(expected = "auto-release condition not met")]
+fn test_809_trigger_auto_release_before_timestamp_panics() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let recipient = Address::generate(&env);
+
+    let id = funded_invoice_with_auto_release(&env, &c, &token_id, &recipient, 5_000);
+    env.ledger().set_timestamp(4_999);
+    c.trigger_auto_release(&id);
+}
+
+#[test]
+fn test_809_trigger_auto_release_after_timestamp_releases_and_emits() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let recipient = Address::generate(&env);
+
+    let id = funded_invoice_with_auto_release(&env, &c, &token_id, &recipient, 5_000);
+    env.ledger().set_timestamp(5_000);
+    c.trigger_auto_release(&id);
+
+    assert!(env
+        .events()
+        .all()
+        .iter()
+        .any(|(_c, topics, _d)| topic1_is(&env, &topics, "auto_rel")));
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Released);
+    assert_eq!(token_client(&env, &token_id).balance(&recipient), 100);
+    assert_eq!(c.get_auto_release_condition(&id), None);
+}
+
+#[test]
+#[should_panic(expected = "no auto-release condition")]
+fn test_809_trigger_auto_release_without_condition_panics() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let id = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 9_999);
+    c.trigger_auto_release(&id);
+}
+
+#[test]
+#[should_panic(expected = "only creator")]
+fn test_809_only_creator_can_set_auto_release_condition() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 9_999);
+    c.set_auto_release_condition(
+        &Address::generate(&env),
+        &id,
+        &AutoReleaseCondition::AtTimestamp(5_000),
+    );
+}
+
+#[test]
+#[should_panic(expected = "auto-release time must be in the future")]
+fn test_809_auto_release_timestamp_in_past_rejected() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 9_999);
+    c.set_auto_release_condition(&creator, &id, &AutoReleaseCondition::AtTimestamp(1_000));
+}

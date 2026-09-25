@@ -1918,6 +1918,17 @@ pub fn deadline_extended(env: &Env, invoice_id: u64, old_deadline: u64, new_dead
 // Unit tests for the per-invoice event sequence counter (issue #708)
 // ---------------------------------------------------------------------------
 
+/// Issue #809: an invoice was released by `trigger_auto_release` after its
+/// auto-release condition was met.
+/// Topics: (split, auto_rel, invoice_id)
+/// Data: ledger timestamp at release
+pub fn auto_release_triggered(env: &Env, invoice_id: u64, released_at: u64) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("auto_rel"), invoice_id),
+        released_at,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

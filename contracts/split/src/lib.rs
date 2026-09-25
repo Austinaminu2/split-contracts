@@ -98,6 +98,7 @@ use types::{
     ProtocolFeeConfig, QueuedAction, RebateTier, Recipient, RepScore, ResolveAction,
     ResolveRule, Role, SimulateReleaseResult, SplitRule, SubscriptionParams, TimelockAction,
     Tombstone, Tranche, TransferRecord, TreasuryRecord, UpgradeProposal,
+    AutoReleaseCondition,
 };
 
 // ---------------------------------------------------------------------------
@@ -206,6 +207,21 @@ fn recipient_whitelist_key(id: u64) -> (Symbol, u64) {
 /// Issue #327: ledger sequence when the invoice was fully funded.
 fn funded_at_ledger_key(id: u64) -> (Symbol, u64) {
     (symbol_short!("fund_led"), id)
+}
+/// Issue #809: auto-release condition set on an invoice.
+fn auto_release_condition_key(id: u64) -> (Symbol, u64) {
+    (symbol_short!("auto_cnd"), id)
+}
+
+/// Issue #809: whether the invoice's auto-release condition (if any) is met.
+/// `None` when no condition is set.
+fn auto_release_condition_met(env: &Env, invoice_id: u64) -> Option<bool> {
+    env.storage()
+        .persistent()
+        .get::<_, AutoReleaseCondition>(&auto_release_condition_key(invoice_id))
+        .map(|condition| match condition {
+            AutoReleaseCondition::AtTimestamp(at) => env.ledger().timestamp() >= at,
+        })
 }
 /// Issue #329: off-chain metadata hash for an invoice.
 fn metadata_hash_key(id: u64) -> (Symbol, u64) {
@@ -7634,7 +7650,9 @@ impl SplitContract {
                 || invoice.held_until.is_some()
                 || invoice
                     .scheduled_release_at
-                    .is_some_and(|t| env.ledger().timestamp() < t);
+                    .is_some_and(|t| env.ledger().timestamp() < t)
+                // Issue #809: hold funds until the auto-release condition is met.
+                || auto_release_condition_met(env, invoice_id) == Some(false);
             // Issue #327: record the ledger sequence when full funding is reached.
             if !env
                 .storage()
@@ -8354,6 +8372,55 @@ impl SplitContract {
 
         let caller = env.current_contract_address();
         Self::_release(&env, invoice_id, &mut invoice, &caller);
+    }
+
+    /// Issue #809: set the condition under which anyone may release this
+    /// invoice via [`Self::trigger_auto_release`]. Creator-only, while Pending.
+    /// Until the condition is met, full funding holds the funds instead of
+    /// releasing them immediately.
+    pub fn set_auto_release_condition(
+        env: Env,
+        creator: Address,
+        invoice_id: u64,
+        condition: AutoReleaseCondition,
+    ) {
+        require_not_paused(&env);
+        creator.require_auth();
+        let invoice = load_invoice(&env, invoice_id);
+        assert!(invoice.creator == creator, "only creator");
+        assert!(
+            invoice.status == InvoiceStatus::Pending,
+            "invoice is not pending"
+        );
+        match condition {
+            AutoReleaseCondition::AtTimestamp(at) => assert!(
+                at > env.ledger().timestamp(),
+                "auto-release time must be in the future"
+            ),
+        }
+        env.storage()
+            .persistent()
+            .set(&auto_release_condition_key(invoice_id), &condition);
+    }
+
+    /// Issue #809: the invoice's auto-release condition, if one is set.
+    pub fn get_auto_release_condition(env: Env, invoice_id: u64) -> Option<AutoReleaseCondition> {
+        env.storage()
+            .persistent()
+            .get(&auto_release_condition_key(invoice_id))
+    }
+
+    /// Issue #809: release an invoice whose auto-release condition is met.
+    /// Callable by anyone; every other release guard (approval, prerequisite,
+    /// co-signers, ...) still applies. Emits `AutoReleaseTriggered`.
+    pub fn trigger_auto_release(env: Env, invoice_id: u64) {
+        let met = auto_release_condition_met(&env, invoice_id).expect("no auto-release condition");
+        assert!(met, "auto-release condition not met");
+        Self::release_invoice(env.clone(), env.current_contract_address(), invoice_id, None);
+        env.storage()
+            .persistent()
+            .remove(&auto_release_condition_key(invoice_id));
+        events::auto_release_triggered(&env, invoice_id, env.ledger().timestamp());
     }
 
     /// Lock a recipient's share for an invoice (admin-only).
