@@ -546,6 +546,12 @@ pub struct InvoiceOptions2 {
     pub early_bird_fee_credit: i128,
     /// Issue #518: denominator for high-precision ratio splits.
     pub ratio_denominator: u64,
+    /// Issue #754: Optional tags for invoice search/filtering (max 5, each max 32 chars).
+    pub tags: Option<Vec<String>>,
+    /// Issue #755: Duration in seconds to extend deadline when quorum is reached (default: 7 days = 604800).
+    pub extension_duration_seconds: u64,
+    /// Issue #755: Quorum in basis points (e.g. 5100 = 51%) for deadline extension votes.
+    pub extension_quorum_bps: u32,
 }
 
 impl Default for InvoiceOptions2 {
@@ -589,6 +595,9 @@ impl Default for InvoiceOptions2 {
             creator_fee_bps: 0,
             early_bird_fee_credit: 0,
             ratio_denominator: 10_000,
+            tags: None,
+            extension_duration_seconds: 604_800,
+            extension_quorum_bps: 5_100,
         }
     }
 }
@@ -1676,6 +1685,8 @@ pub struct ConfidentialPayment {
 pub struct InvoiceParams {
     pub creator: Address,
     pub recipients: Vec<Address>,
+    pub payment_token: Option<Address>,
+    pub tags: Option<Vec<String>>,
     // ... add all other fields here ...
 }
 

@@ -145,4 +145,10 @@ pub enum ContractError {
     AlreadyPaid = 65,
     /// Recipient list is shorter than the configured minimum recipient count.
     TooFewRecipients = 66,
+    /// Issue #753: Payer sent the wrong payment token.
+    WrongPaymentToken = 67,
+    /// Issue #754: Tag is invalid (not lowercase alphanumeric + hyphens, or too long).
+    InvalidTag = 68,
+    /// Issue #755: Invoice has reached the maximum number of deadline extensions (3).
+    ExtensionLimitReached = 69,
 }

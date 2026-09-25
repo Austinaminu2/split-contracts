@@ -368,6 +368,26 @@ fn subscription_params_key(id: u64) -> (Symbol, u64) {
 fn ext_vote_key(id: u64) -> (Symbol, u64) {
     (symbol_short!("ext_vote"), id)
 }
+/// Issue #752: NFT mint contract key — instance storage (distinct from nft_gate_key).
+fn nft_mint_contract_key() -> Symbol {
+    symbol_short!("nft_ctr")
+}
+/// Issue #754: Tag index key — maps tag string to vec of invoice IDs.
+fn tag_index_key(tag: &String) -> (Symbol, String) {
+    (symbol_short!("tag_idx"), tag.clone())
+}
+/// Issue #754: Per-invoice tags storage key.
+fn invoice_tags_key(id: u64) -> (Symbol, u64) {
+    (symbol_short!("inv_tags"), id)
+}
+/// Issue #755: Per-invoice extension count key.
+fn invoice_ext_count_key(id: u64) -> (Symbol, u64) {
+    (symbol_short!("ext_cnt"), id)
+}
+/// Issue #755: Per-invoice extension config key — stores (duration_seconds: u64, quorum_bps: u32).
+fn invoice_ext_config_key(id: u64) -> (Symbol, u64) {
+    (symbol_short!("ext_cfg"), id)
+}
 fn group_key(group_id: u64) -> (Symbol, u64) {
     (symbol_short!("grp"), group_id)
 }
@@ -751,11 +771,6 @@ fn slippage_tolerance_key(invoice_id: u64) -> (Symbol, u64) {
 /// Issue #451: per-invoice required memo hash.
 fn required_memo_hash_key(invoice_id: u64) -> (Symbol, u64) {
     (symbol_short!("req_memo"), invoice_id)
-}
-
-/// Issue #452: per-invoice tags.
-fn invoice_tags_key(invoice_id: u64) -> (Symbol, u64) {
-    (symbol_short!("inv_tags"), invoice_id)
 }
 
 fn invoice_rate_limit_window_key() -> Symbol {
@@ -5115,6 +5130,20 @@ impl SplitContract {
         let cosigners = options.cosigners.clone();
         let cosigner_threshold = options.cosigner_threshold;
 
+        // Issue #753: if payment_token override is set, use it as funding_token.
+        let payment_token_override = options.ext.payment_token.clone();
+        let funding_token = if let Some(ref tok) = payment_token_override {
+            tok.clone()
+        } else {
+            token.clone()
+        };
+
+        // Issue #754: capture tags before options is consumed.
+        let tags_opt = options.ext.tags.clone();
+        // Issue #755: capture extension config before options is consumed.
+        let ext_duration = options.ext.extension_duration_seconds;
+        let ext_quorum_bps = options.ext.extension_quorum_bps;
+
         // Validate split ratios (if provided) before any storage is touched.
         if !options.ratios.is_empty() {
             let denominator = options.ext.ratio_denominator.max(1);
@@ -5129,7 +5158,7 @@ impl SplitContract {
             recipients,
             amounts,
             Vec::new(&env),
-            token,
+            funding_token,
             deadline,
             options.co_creators,
             options.allow_early_withdrawal,
@@ -5190,6 +5219,26 @@ impl SplitContract {
             options.ratios.clone(),
             options.ext.ratio_denominator,
         );
+
+        // Issue #753: emit PaymentTokenSet event if payment_token override was used.
+        if let Some(ref tok) = payment_token_override {
+            events::payment_token_set(&env, id, tok);
+        }
+
+        // Issue #754: index tags if provided.
+        if let Some(ref tags) = tags_opt {
+            Self::_apply_tags(&env, id, tags);
+        }
+
+        // Issue #755: store extension config if non-default.
+        let default_duration: u64 = 604_800;
+        let default_quorum: u32 = 5_100;
+        if ext_duration != default_duration || ext_quorum_bps != default_quorum {
+            env.storage().persistent().set(
+                &invoice_ext_config_key(id),
+                &(ext_duration, ext_quorum_bps),
+            );
+        }
 
         apply_overfunding_policy(&env, id, overfunding_policy);
         apply_cosigner_config(&env, id, cosigners, cosigner_threshold);
@@ -7697,7 +7746,7 @@ impl SplitContract {
         // Accept the base token or any token in accepted_tokens.
         let is_base = source_token == invoice_token;
         let is_accepted = is_base || invoice.accepted_tokens.iter().any(|t| t == source_token);
-        assert!(is_accepted, "token not accepted");
+        assert!(is_accepted, "WrongPaymentToken: token not accepted");
 
         // Validate and increment nonce.
         let stored_nonce: u64 = env
@@ -9251,6 +9300,203 @@ impl SplitContract {
             .persistent()
             .get(&invoice_tags_key(invoice_id))
             .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #754: Tag-based invoice search index
+    // -----------------------------------------------------------------------
+
+    /// Validate a single tag string: lowercase alphanumeric + hyphens, max 32 chars.
+    fn validate_tag(env: &Env, tag: &String) {
+        let len = tag.len();
+        if len == 0 || len > 32 {
+            panic_with_error!(env, ContractError::InvalidTag);
+        }
+        // Copy into a fixed-size stack buffer and validate byte-by-byte.
+        let mut buf = [0u8; 32];
+        let slice = &mut buf[..len as usize];
+        tag.copy_into_slice(slice);
+        for &b in slice.iter() {
+            let ok = b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-';
+            if !ok {
+                panic_with_error!(env, ContractError::InvalidTag);
+            }
+        }
+    }
+
+    /// Internal: index each tag → invoice_id mapping and store tags on the invoice.
+    /// Emits TagsUpdated event with added tags and empty removed list.
+    fn _apply_tags(env: &Env, invoice_id: u64, tags: &Vec<String>) {
+        assert!(tags.len() <= 5, "maximum 5 tags per invoice");
+        for tag in tags.iter() {
+            Self::validate_tag(env, &tag);
+            // Update tag → Vec<u64> index.
+            let key = tag_index_key(&tag);
+            let mut ids: Vec<u64> = env
+                .storage()
+                .persistent()
+                .get(&key)
+                .unwrap_or_else(|| Vec::new(env));
+            if !ids.contains(invoice_id) {
+                ids.push_back(invoice_id);
+            }
+            env.storage().persistent().set(&key, &ids);
+        }
+        // Store tags on the invoice.
+        env.storage()
+            .persistent()
+            .set(&invoice_tags_key(invoice_id), tags);
+        let empty: Vec<String> = Vec::new(env);
+        events::tags_updated(env, invoice_id, tags, &empty);
+    }
+
+    /// Issue #754: Paginated read of invoices by tag.
+    /// Returns up to `limit` invoice IDs that have `tag`, starting after `cursor`
+    /// (exclusive — use 0 to start from the beginning).
+    pub fn get_invoices_by_tag(env: Env, tag: String, limit: u32, cursor: u64) -> Vec<u64> {
+        let key = tag_index_key(&tag);
+        let all_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut result: Vec<u64> = Vec::new(&env);
+        let mut past_cursor = cursor == 0;
+        for id in all_ids.iter() {
+            if !past_cursor {
+                if id == cursor {
+                    past_cursor = true;
+                }
+                continue;
+            }
+            if result.len() >= limit {
+                break;
+            }
+            result.push_back(id);
+        }
+        result
+    }
+
+    /// Issue #754: Add a tag to an existing invoice (creator only).
+    /// Validates the tag format, enforces the 5-tag limit, updates the index,
+    /// and emits TagsUpdated.
+    pub fn add_tag(env: Env, invoice_id: u64, creator: Address, tag: String) {
+        require_not_paused(&env);
+        creator.require_auth();
+        let invoice = load_invoice(&env, invoice_id);
+        require_creator_or_cocreator(&invoice, &creator);
+
+        Self::validate_tag(&env, &tag);
+
+        let mut tags: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&invoice_tags_key(invoice_id))
+            .unwrap_or_else(|| Vec::new(&env));
+
+        if tags.contains(&tag) {
+            return; // idempotent
+        }
+        assert!(tags.len() < 5, "maximum 5 tags per invoice");
+        tags.push_back(tag.clone());
+        env.storage()
+            .persistent()
+            .set(&invoice_tags_key(invoice_id), &tags);
+
+        // Update tag index.
+        let key = tag_index_key(&tag);
+        let mut ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+        if !ids.contains(invoice_id) {
+            ids.push_back(invoice_id);
+        }
+        env.storage().persistent().set(&key, &ids);
+
+        let mut added: Vec<String> = Vec::new(&env);
+        added.push_back(tag);
+        let removed: Vec<String> = Vec::new(&env);
+        events::tags_updated(&env, invoice_id, &added, &removed);
+    }
+
+    /// Issue #754: Remove a tag from an existing invoice (creator only).
+    /// Removes from both the invoice's tag list and the global tag index,
+    /// and emits TagsUpdated.
+    pub fn remove_tag(env: Env, invoice_id: u64, creator: Address, tag: String) {
+        require_not_paused(&env);
+        creator.require_auth();
+        let invoice = load_invoice(&env, invoice_id);
+        require_creator_or_cocreator(&invoice, &creator);
+
+        let tags: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&invoice_tags_key(invoice_id))
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let initial_len = tags.len();
+        let mut new_tags: Vec<String> = Vec::new(&env);
+        for t in tags.iter() {
+            if t != tag {
+                new_tags.push_back(t);
+            }
+        }
+        if new_tags.len() == initial_len {
+            return; // tag wasn't present — idempotent
+        }
+        env.storage()
+            .persistent()
+            .set(&invoice_tags_key(invoice_id), &new_tags);
+
+        // Remove from tag index.
+        let key = tag_index_key(&tag);
+        let ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut new_ids: Vec<u64> = Vec::new(&env);
+        for id in ids.iter() {
+            if id != invoice_id {
+                new_ids.push_back(id);
+            }
+        }
+        env.storage().persistent().set(&key, &new_ids);
+
+        let added: Vec<String> = Vec::new(&env);
+        let mut removed: Vec<String> = Vec::new(&env);
+        removed.push_back(tag);
+        events::tags_updated(&env, invoice_id, &added, &removed);
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #752: NFT mint contract configuration
+    // -----------------------------------------------------------------------
+
+    /// Issue #752: Admin-only — set the NFT contract address for proof-of-funding mints.
+    /// Pass `contract: Address` to enable NFT minting on release.
+    /// The NFT contract must implement `mint(to: Address, invoice_id: u64)`.
+    pub fn set_nft_contract(env: Env, admin: Address, contract: Address) {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&admin_key())
+            .expect("admin not set");
+        assert!(admin == stored_admin, "NotAuthorized");
+        env.storage()
+            .instance()
+            .set(&nft_mint_contract_key(), &contract);
+    }
+
+    /// Issue #752: Get the configured NFT contract address, if set.
+    pub fn get_nft_contract(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get::<Symbol, Address>(&nft_mint_contract_key())
     }
 
     /// Claim vesting cliff share after cliff timestamp has passed (issue #27).
@@ -10856,6 +11102,31 @@ impl SplitContract {
 
         update_creator_stats_on_release(env, &invoice.creator, funded);
         accrue_creator_rebate(env, &invoice.creator, funded, total_fee);
+
+        // Issue #752: best-effort NFT mint on full funding.
+        // If an NFT contract is configured, call mint(creator, invoice_id).
+        // Failure is logged but does NOT revert the release.
+        if !has_failed_payouts {
+            if let Some(nft_contract) = env
+                .storage()
+                .instance()
+                .get::<Symbol, Address>(&nft_mint_contract_key())
+            {
+                let mut mint_args: Vec<Val> = Vec::new(env);
+                mint_args.push_back(invoice.creator.clone().into_val(env));
+                mint_args.push_back(invoice_id.into_val(env));
+                let mint_result = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+                    &nft_contract,
+                    &Symbol::new(env, "mint"),
+                    mint_args,
+                );
+                if mint_result.map_or(false, |r| r.is_ok()) {
+                    events::nft_minted(env, invoice_id, &invoice.creator, &nft_contract);
+                } else {
+                    events::nft_mint_failed(env, invoice_id);
+                }
+            }
+        }
 
         // Spin up next subscription invoice if one is scheduled.
         if let Some(params) = env
@@ -12524,8 +12795,14 @@ impl SplitContract {
     // Deadline extension by payer vote (#39)
     // -----------------------------------------------------------------------
 
-    /// Vote to extend the invoice deadline by 7 days.
-    /// Once a strict majority of unique payers vote, the deadline is extended.
+    /// Vote to extend the invoice deadline before it expires.
+    ///
+    /// Issue #755: Once votes reach the configured quorum (default 51% of unique
+    /// payers), the deadline is extended by `extension_duration_seconds` (default
+    /// 7 days). A maximum of 3 extensions per invoice are allowed; a 4th attempt
+    /// panics with `ExtensionLimitReached`.
+    ///
+    /// Only addresses that have contributed to the invoice may vote.
     pub fn vote_extend_deadline(env: Env, invoice_id: u64, voter: Address) {
         voter.require_auth();
 
@@ -12536,9 +12813,29 @@ impl SplitContract {
             "invoice is not pending"
         );
 
+        // Only payers who have contributed can vote.
         let has_paid = invoice.payments.iter().any(|p| p.payer == voter);
         assert!(has_paid, "only payers can vote");
 
+        // Enforce max 3 extensions.
+        let ext_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&invoice_ext_count_key(invoice_id))
+            .unwrap_or(0u32);
+        if ext_count >= 3 {
+            panic_with_error!(&env, ContractError::ExtensionLimitReached);
+        }
+
+        // Load per-invoice config: (duration_seconds, quorum_bps).
+        // Default: 7 days (604_800s), 51% quorum (5_100 bps).
+        let (duration_seconds, quorum_bps): (u64, u32) = env
+            .storage()
+            .persistent()
+            .get(&invoice_ext_config_key(invoice_id))
+            .unwrap_or((604_800u64, 5_100u32));
+
+        // Collect unique payers.
         let mut unique_payers: Vec<Address> = Vec::new(&env);
         for payment in invoice.payments.iter() {
             if !unique_payers.contains(&payment.payer) {
@@ -12553,19 +12850,44 @@ impl SplitContract {
             .get(&vote_key)
             .unwrap_or_else(|| Vec::new(&env));
 
+        // Deduplicate votes.
         if votes.contains(&voter) {
             return;
         }
         votes.push_back(voter);
 
-        if votes.len() > unique_payers.len() / 2 {
+        // Check if quorum is reached: votes * 10_000 >= unique_payers * quorum_bps.
+        let votes_bps = (votes.len() as u64)
+            .saturating_mul(10_000u64)
+            .checked_div(unique_payers.len().max(1) as u64)
+            .unwrap_or(0) as u32;
+
+        if votes_bps >= quorum_bps {
+            // Quorum reached — extend deadline.
             let mut invoice = load_invoice(&env, invoice_id);
-            invoice.deadline += 7 * 24 * 60 * 60;
+            invoice.deadline = invoice.deadline.saturating_add(duration_seconds);
             save_invoice(&env, invoice_id, &invoice);
+
+            // Increment extension count.
+            env.storage()
+                .persistent()
+                .set(&invoice_ext_count_key(invoice_id), &(ext_count + 1));
+
+            // Clear votes for next round.
             env.storage().persistent().remove(&vote_key);
+
+            events::deadline_extended_with_count(&env, invoice_id, invoice.deadline, ext_count + 1);
         } else {
             env.storage().persistent().set(&vote_key, &votes);
         }
+    }
+
+    /// Issue #755: Get the number of times this invoice's deadline has been extended.
+    pub fn get_invoice_extension_count(env: Env, invoice_id: u64) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&invoice_ext_count_key(invoice_id))
+            .unwrap_or(0u32)
     }
 
     // -----------------------------------------------------------------------
