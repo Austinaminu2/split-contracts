@@ -27,7 +27,7 @@
 
 use crate::storage_keys::ev_seq_key;
 use crate::types::{DisputeOutcome, FeeSplit, InvoicePhase, InvoiceStatus, OverfundingPolicy, RepScore, TimelockAction};
-use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, String, Symbol, Vec};
 
 // ---------------------------------------------------------------------------
 // Event sequence helper (per-invoice, temporary-storage counter)
@@ -1041,6 +1041,11 @@ pub fn fee_recipients_updated(env: &Env, recipients: &Vec<FeeSplit>) {
 ///
 /// Topics: (split, fee_paid, invoice_id)
 /// Data: (amount, treasury, ledger)
+///
+/// Issue #751 moved protocol-fee collection to payment time (see
+/// `protocol_fee_charged`), so this event is retained only for indexers that
+/// still subscribe to the historical release-time fee.
+#[allow(dead_code)]
 pub fn fee_paid(env: &Env, invoice_id: u64, amount: i128, treasury: &Address) {
     env.events().publish(
         (
@@ -1911,6 +1916,96 @@ pub fn deadline_extended(env: &Env, invoice_id: u64, old_deadline: u64, new_dead
     env.events().publish(
         (symbol_short!("split"), symbol_short!("dl_ext"), invoice_id),
         (old_deadline, new_deadline),
+    );
+}
+
+/// Issue #749: Emitted when the payer whitelist (`allowed_payers`) is extended
+/// by `add_to_whitelist` / `remove_from_whitelist`, or initialised at creation.
+///
+/// `added` and `removed` are the exact deltas applied by the call — both are
+/// empty when the call was a no-op (e.g. removing an address that was not
+/// listed), in which case the event is not published at all.
+///
+/// Topics: (split, pay_wl, invoice_id)
+/// Data: (added, removed)
+pub fn payer_whitelist_updated(
+    env: &Env,
+    invoice_id: u64,
+    added: &Vec<Address>,
+    removed: &Vec<Address>,
+) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("pay_wl"), invoice_id),
+        (added.clone(), removed.clone()),
+    );
+}
+
+/// Issue #751: Emitted when the protocol fee is withheld from a payment.
+///
+/// The fee is transferred from the payer into the contract's treasury balance
+/// (`get_treasury_balance`) at payment time and later released to the admin
+/// via `withdraw_treasury`.
+///
+/// Topics: (split, fee_chg, invoice_id)
+/// Data: (payer, fee_amount)
+pub fn protocol_fee_charged(env: &Env, invoice_id: u64, payer: &Address, fee_amount: i128) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("fee_chg"), invoice_id),
+        (payer.clone(), fee_amount),
+    );
+}
+
+/// Issue #751: Emitted when the admin withdraws accumulated protocol fees.
+///
+/// Topics: (split, trs_wdr)
+/// Data: (admin, amount)
+pub fn treasury_withdrawn(env: &Env, admin: &Address, amount: i128) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("trs_wdr")),
+        (admin.clone(), amount),
+    );
+}
+
+/// Issue #748: Emitted when an invoice template is saved (or re-saved as a new
+/// version). `version` is the monotonically increasing version number for
+/// `(creator, name)`.
+///
+/// Topics: (split, tmpl_svd)
+/// Data: (creator, name, version)
+pub fn template_saved(env: &Env, creator: &Address, name: &Symbol, version: u32) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("tmpl_svd")),
+        (creator.clone(), name.clone(), version),
+    );
+}
+
+/// Issue #748: Emitted when an invoice is instantiated from a saved template.
+///
+/// Topics: (split, tmpl_inv, invoice_id)
+/// Data: (creator, name, version)
+pub fn invoice_created_from_template(
+    env: &Env,
+    invoice_id: u64,
+    creator: &Address,
+    name: &Symbol,
+    version: u32,
+) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("tmpl_inv"), invoice_id),
+        (creator.clone(), name.clone(), version),
+    );
+}
+
+/// Issue #750: Emitted alongside `invoice_cloned` with the creator included, so
+/// indexers can attribute a clone to an address without re-reading invoice
+/// state. `invoice_cloned` is kept unchanged for backward compatibility.
+///
+/// Topics: (split, cln_full, new_id)
+/// Data: (source_id, creator)
+pub fn invoice_cloned_with_creator(env: &Env, source_id: u64, new_id: u64, creator: &Address) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("cln_full"), new_id),
+        (source_id, creator.clone()),
     );
 }
 

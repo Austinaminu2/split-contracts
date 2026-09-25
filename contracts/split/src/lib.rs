@@ -86,6 +86,10 @@ use soroban_sdk::{
 #[allow(dead_code)]
 const MAX_PARENT_DEPTH: u32 = 10;
 
+/// Issue #749: maximum number of addresses that may be present in an invoice's
+/// payer whitelist (`allowed_payers`).
+const MAX_PAYER_WHITELIST: u32 = 50;
+
 use types::{
     AdminAction, AdminRole, AdminSet, AuditEntry, Bid, CircuitBreakerStatus,
     CloneOverrides, CompactInvoice, CompactMigrateResult, CompletionProof, ComputeEstimate,
@@ -96,8 +100,8 @@ use types::{
     InvoiceTemplateRecord, LegacyInvoice, OverflowBehavior, OverfundingPolicy, Payment,
     PaymentCertificate, PaymentCommitment, PaymentProof, PaymentRecord, PendingAdminAction,
     ProtocolFeeConfig, QueuedAction, RebateTier, Recipient, RepScore, ResolveAction,
-    ResolveRule, Role, SimulateReleaseResult, SplitRule, SubscriptionParams, TimelockAction,
-    Tombstone, Tranche, TransferRecord, TreasuryRecord, UpgradeProposal,
+    ResolveRule, Role, SimulateReleaseResult, SplitRule, SubscriptionParams, TemplateOverrides,
+    TimelockAction, Tombstone, Tranche, TransferRecord, TreasuryRecord, UpgradeProposal,
 };
 
 // ---------------------------------------------------------------------------
@@ -896,6 +900,33 @@ fn dispute_raised_at_key(invoice_id: u64) -> (Symbol, u64) {
 /// Issue #326: protocol fee config — instance storage.
 fn protocol_fee_key() -> Symbol {
     symbol_short!("proto_fee")
+}
+
+/// Issue #751: accumulated protocol fees held by the contract, awaiting
+/// `withdraw_treasury`. Instance storage so the balance never expires while the
+/// contract is live.
+fn treasury_balance_key() -> Symbol {
+    symbol_short!("trs_bal")
+}
+
+/// Issue #751: current protocol fee rate in basis points (0 when unset).
+///
+/// Reads the [`ProtocolFeeConfig`] written by `set_protocol_fee` /
+/// `set_protocol_fee_bps`; a missing config means the fee is disabled.
+fn get_protocol_fee_bps_internal(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get::<Symbol, ProtocolFeeConfig>(&protocol_fee_key())
+        .map(|cfg| cfg.rate_bps)
+        .unwrap_or(0)
+}
+
+/// Issue #751: protocol fees currently held by the contract.
+fn get_treasury_balance_internal(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get::<Symbol, i128>(&treasury_balance_key())
+        .unwrap_or(0)
 }
 
 fn commitment_key(invoice_id: u64, payer: &Address) -> (Symbol, u64, Address) {
@@ -5835,6 +5866,14 @@ impl SplitContract {
         // Issue #87: Increment referral count if referrer is provided.
         // (referrer is not yet wired into _create_invoice_inner; skipped)
 
+        // Issue #749: the payer whitelist is capped at MAX_PAYER_WHITELIST entries.
+        if let Some(ref whitelist) = allowed_payers {
+            assert!(
+                whitelist.len() <= MAX_PAYER_WHITELIST,
+                "whitelist exceeds maximum of 50 addresses"
+            );
+        }
+
         let invoice = Invoice {
             version: 1u32,
             creator: creator.clone(),
@@ -6360,6 +6399,9 @@ impl SplitContract {
     ///
     /// Panics with "max clone depth exceeded" if `source.clone_depth >= 5`.
     /// Panics with "not invoice creator" if `creator != source.creator`.
+    /// Panics with [`ContractError::CannotCloneTerminalInvoice`] if the source
+    /// is `Expired` or `Refunded` (issue #750) — a clone of a terminal invoice
+    /// would have no live payment state to inherit.
     pub fn clone_invoice(
         env: Env,
         creator: Address,
@@ -6370,6 +6412,11 @@ impl SplitContract {
         creator.require_auth();
 
         let source = load_invoice(&env, source_id);
+
+        // Issue #750: `Expired` and `Refunded` are terminal — refuse to clone.
+        if source.status == InvoiceStatus::Expired || source.status == InvoiceStatus::Refunded {
+            panic_with_error!(env, ContractError::CannotCloneTerminalInvoice);
+        }
 
         assert!(source.creator == creator, "not invoice creator");
         assert!(source.clone_depth < 5, "max clone depth exceeded");
@@ -6530,6 +6577,8 @@ impl SplitContract {
             env.storage().persistent().set(&metadata_hash_key(id), &hash);
         }
         events::invoice_cloned(&env, source_id, id);
+        // Issue #750: companion event carrying the creator for indexers.
+        events::invoice_cloned_with_creator(&env, source_id, id, &creator);
 
         // Index each recipient -> invoice ID.
         for recipient in recipients.iter() {
@@ -6544,6 +6593,135 @@ impl SplitContract {
         }
 
         id
+    }
+
+    /// Issue #750: Return the full clone lineage for `invoice_id`, ordered from
+    /// the root ancestor down to `invoice_id` itself.
+    ///
+    /// A non-cloned invoice returns a single-element vector containing its own
+    /// id. The walk follows `parent_invoice_id`, which is set by
+    /// [`Self::clone_invoice`], and is inherently bounded by the maximum clone
+    /// depth enforced there — but a defensive cap still guards against
+    /// malformed (cyclic) state.
+    ///
+    /// Panics with "invoice not found" if any link in the chain is missing.
+    pub fn get_lineage(env: Env, invoice_id: u64) -> Vec<u64> {
+        // Walk from the given invoice up to the root.
+        let mut chain: Vec<u64> = Vec::new(&env);
+        let mut current = invoice_id;
+        loop {
+            chain.push_back(current);
+
+            let invoice = load_invoice(&env, current);
+            match invoice.parent_invoice_id {
+                Some(parent_id) => current = parent_id,
+                None => break,
+            }
+
+            // Defensive: never loop forever on corrupt/cyclic lineage.
+            if chain.len() > MAX_PARENT_DEPTH {
+                break;
+            }
+        }
+
+        // Reverse into root -> leaf order.
+        let mut lineage: Vec<u64> = Vec::new(&env);
+        let mut i = chain.len();
+        while i > 0 {
+            i -= 1;
+            if let Some(id) = chain.get(i) {
+                lineage.push_back(id);
+            }
+        }
+        lineage
+    }
+
+    /// Issue #749: Add `address` to `invoice_id`'s payer whitelist.
+    ///
+    /// Only the creator (or a co-creator) may call this. If the invoice was
+    /// created without a whitelist, calling this converts it into a restricted
+    /// invoice seeded with `address` as its first member. Adding an address
+    /// that is already listed is a no-op and emits no event.
+    ///
+    /// Panics with "whitelist is full (max 50)" once [`MAX_PAYER_WHITELIST`]
+    /// entries are present.
+    pub fn add_to_whitelist(env: Env, invoice_id: u64, creator: Address, address: Address) {
+        require_not_paused(&env);
+        creator.require_auth();
+
+        let mut invoice = load_invoice(&env, invoice_id);
+        assert!(
+            invoice.creator == creator || invoice.co_creators.iter().any(|c| c == creator),
+            "only creator can modify whitelist"
+        );
+
+        // A missing whitelist means "open invoice" — create one.
+        if invoice.allowed_payers.is_none() {
+            invoice.allowed_payers = Some(Vec::new(&env));
+        }
+
+        let mut added: Vec<Address> = Vec::new(&env);
+        let removed: Vec<Address> = Vec::new(&env);
+
+        if let Some(ref mut whitelist) = invoice.allowed_payers {
+            if !whitelist.iter().any(|p| p == address) {
+                assert!(
+                    whitelist.len() < MAX_PAYER_WHITELIST,
+                    "whitelist is full (max 50)"
+                );
+                whitelist.push_back(address.clone());
+                added.push_back(address.clone());
+            }
+        }
+
+        save_invoice(&env, invoice_id, &invoice);
+        append_audit_entry(&env, invoice_id, symbol_short!("wl_add"), &creator);
+
+        if !added.is_empty() {
+            events::payer_whitelist_updated(&env, invoice_id, &added, &removed);
+        }
+    }
+
+    /// Issue #749: Remove `address` from `invoice_id`'s payer whitelist.
+    ///
+    /// Only the creator (or a co-creator) may call this. Removing an address
+    /// that is not listed — or calling this on an open (whitelist-less)
+    /// invoice — is a no-op and emits no event. Payments already made by the
+    /// removed address are untouched; only future payments are blocked.
+    pub fn remove_from_whitelist(env: Env, invoice_id: u64, creator: Address, address: Address) {
+        require_not_paused(&env);
+        creator.require_auth();
+
+        let mut invoice = load_invoice(&env, invoice_id);
+        assert!(
+            invoice.creator == creator || invoice.co_creators.iter().any(|c| c == creator),
+            "only creator can modify whitelist"
+        );
+
+        let added: Vec<Address> = Vec::new(&env);
+        let mut removed: Vec<Address> = Vec::new(&env);
+
+        let mut found = false;
+        if let Some(ref whitelist) = invoice.allowed_payers {
+            let mut remaining: Vec<Address> = Vec::new(&env);
+            for p in whitelist.iter() {
+                if p == address {
+                    found = true;
+                } else {
+                    remaining.push_back(p);
+                }
+            }
+            if found {
+                invoice.allowed_payers = Some(remaining);
+                removed.push_back(address.clone());
+            }
+        }
+
+        if found {
+            save_invoice(&env, invoice_id, &invoice);
+            append_audit_entry(&env, invoice_id, symbol_short!("wl_rem"), &creator);
+            events::payer_whitelist_updated(&env, invoice_id, &added, &removed);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -6783,11 +6961,14 @@ impl SplitContract {
         }
 
         Self::enforce_invoice_rate_limit(&env, invoice_id, &payer);
+        // Issue #751: withhold the protocol fee before crediting the invoice, so
+        // the fee never enters `funded` and cannot be paid out to recipients.
+        let net_amount = Self::_withhold_protocol_fee(&env, invoice_id, &payer, amount);
         Self::_pay(
             &env,
             &payer,
             invoice_id,
-            amount,
+            net_amount,
             nonce,
             _auto_convert,
             None,
@@ -6821,8 +7002,11 @@ impl SplitContract {
             env.ledger().timestamp() <= invoice.deadline,
             "invoice deadline has passed"
         );
+        // Issue #749: enforce the payer whitelist with a typed error.
         if let Some(ref whitelist) = invoice.allowed_payers {
-            assert!(whitelist.contains(payer), "payer not allowed");
+            if !whitelist.contains(payer) {
+                panic_with_error!(env, ContractError::PayerNotWhitelisted);
+            }
         }
         if let Some(ref allowlist) = invoice.contributor_allowlist {
             assert!(allowlist.contains(payer), "ContributorNotAllowed");
@@ -7049,6 +7233,52 @@ impl SplitContract {
         );
     }
 
+    /// Issue #751: Withhold the configured protocol fee from `amount`, moving it
+    /// from the payer into the contract's treasury balance
+    /// ([`Self::get_treasury_balance`]), and return the remainder that should be
+    /// credited to the invoice.
+    ///
+    /// The fee is `amount * protocol_fee_bps / 10_000`, rounded down. When the
+    /// configured rate is 0 — the default — or the computed fee rounds to 0, no
+    /// token transfer happens and `amount` is returned unchanged. A non-zero fee
+    /// emits `ProtocolFeeCharged`.
+    ///
+    /// Fees are held by the contract (rather than pushed straight to the
+    /// treasury address) so the admin can batch-release them via
+    /// `withdraw_treasury`.
+    fn _withhold_protocol_fee(env: &Env, invoice_id: u64, payer: &Address, amount: i128) -> i128 {
+        if amount <= 0 {
+            return amount;
+        }
+
+        let rate_bps = get_protocol_fee_bps_internal(env);
+        if rate_bps == 0 {
+            return amount;
+        }
+
+        // Issue #482: fail loudly on overflow instead of silently truncating.
+        let fee = checked_bps_of(amount, rate_bps, 10_000u128).expect("ArithmeticOverflow");
+        if fee <= 0 {
+            return amount;
+        }
+
+        let invoice = load_invoice(env, invoice_id);
+        token::Client::new(env, &invoice.funding_token).transfer(
+            payer,
+            &env.current_contract_address(),
+            &fee,
+        );
+
+        let balance = get_treasury_balance_internal(env);
+        env.storage()
+            .instance()
+            .set(&treasury_balance_key(), &balance.saturating_add(fee));
+
+        events::protocol_fee_charged(env, invoice_id, payer, fee);
+
+        amount - fee
+    }
+
     fn _pay(
         env: &Env,
         payer: &Address,
@@ -7119,8 +7349,11 @@ impl SplitContract {
         assert!(!invoice.admin_frozen, "invoice frozen by admin");
 
         // Check allowed_payers allowlist.
+        // Issue #749: enforce the payer whitelist with a typed error.
         if let Some(ref whitelist) = invoice.allowed_payers {
-            assert!(whitelist.contains(payer), "payer not allowed");
+            if !whitelist.contains(payer) {
+                panic_with_error!(env, ContractError::PayerNotWhitelisted);
+            }
         }
 
         // Issue #485: check per-invoice contributor allowlist.
@@ -8777,8 +9010,11 @@ impl SplitContract {
         if let Some(ref mut whitelist) = invoice.allowed_payers {
             // Only add if not already present
             if !whitelist.iter().any(|p| p == payer) {
-                // Issue #309: enforce max 100 allowed payers
-                assert!(whitelist.len() < 100, "allowlist is full");
+                // Issue #309 / #749: enforce the per-invoice whitelist cap.
+                assert!(
+                    whitelist.len() < MAX_PAYER_WHITELIST,
+                    "whitelist is full (max 50)"
+                );
                 whitelist.push_back(payer.clone());
                 save_invoice(&env, invoice_id, &invoice);
                 append_audit_entry(&env, invoice_id, symbol_short!("add_payer"), &creator);
@@ -10293,31 +10529,10 @@ impl SplitContract {
             );
         }
 
-        // Issue #326: deduct protocol fee from the release amount before distributing.
-        let proto_fee_amount: i128 = if let Some(proto_cfg) =
-            env.storage()
-                .instance()
-                .get::<Symbol, ProtocolFeeConfig>(&protocol_fee_key())
-        {
-            if proto_cfg.rate_bps > 0 {
-                let fee = checked_bps_of(funded, proto_cfg.rate_bps, 10_000u128)
-                    .expect("ArithmeticOverflow"); // Issue #482
-                if fee > 0 {
-                    funding_token_client.transfer(
-                        &env.current_contract_address(),
-                        &proto_cfg.treasury,
-                        &fee,
-                    );
-                    events::fee_paid(env, invoice_id, fee, &proto_cfg.treasury);
-                }
-                fee
-            } else {
-                0
-            }
-        } else {
-            0
-        };
-        let _ = proto_fee_amount;
+        // Issue #751: the protocol fee is withheld from each payment at `pay`
+        // time (see `_withhold_protocol_fee`) and accumulates in the contract
+        // treasury, so no further deduction is made at release. This supersedes
+        // the release-time transfer introduced by issue #326.
 
         // If this invoice belongs to a treasury group, route the net payouts to the group's treasury address.
         if let Some((_group_id, record)) = treasury_record_for_invoice(env, invoice_id) {
@@ -12314,7 +12529,50 @@ impl SplitContract {
             .persistent()
             .set(&template_key(&creator, &name), &template);
 
+        // Issue #748: announce the new (or updated) template version.
+        events::template_saved(&env, &creator, &name, version);
+
         version
+    }
+
+    /// Issue #748: Load a saved template by `(creator, name)`.
+    ///
+    /// `version` of `None` selects the most recently saved version, falling
+    /// back to the legacy unversioned key for templates stored before
+    /// versioning existed. Panics with "template not found" when nothing is
+    /// stored.
+    fn _load_template(
+        env: &Env,
+        creator: &Address,
+        name: &Symbol,
+        version: Option<u32>,
+    ) -> InvoiceTemplate {
+        match version {
+            Some(v) => env
+                .storage()
+                .persistent()
+                .get(&template_version_key(creator, name, v))
+                .expect("template version not found"),
+            None => {
+                let count: u32 = env
+                    .storage()
+                    .persistent()
+                    .get(&template_version_count_key(creator, name))
+                    .unwrap_or(0u32);
+                if count > 0 {
+                    env.storage()
+                        .persistent()
+                        .get(&template_version_key(creator, name, count))
+                        .expect("latest template not found")
+                } else {
+                    // Fall back to legacy unversioned key.
+                    env.storage()
+                        .persistent()
+                        .get(&template_key(creator, name))
+                        .expect("template not found")
+                }
+            }
+        }
     }
 
     /// Create a new invoice from a previously saved template.
@@ -12328,52 +12586,52 @@ impl SplitContract {
     ) -> u64 {
         creator.require_auth();
 
-        let tmpl: InvoiceTemplate = if let Some(v) = version {
-            env.storage()
-                .persistent()
-                .get(&template_version_key(&creator, &name, v))
-                .expect("template version not found")
-        } else {
-            let count: u32 = env
-                .storage()
-                .persistent()
-                .get(&template_version_count_key(&creator, &name))
-                .unwrap_or(0u32);
-            if count > 0 {
-                env.storage()
-                    .persistent()
-                    .get(&template_version_key(&creator, &name, count))
-                    .expect("latest template not found")
-            } else {
-                // Fall back to legacy unversioned key.
-                env.storage()
-                    .persistent()
-                    .get(&template_key(&creator, &name))
-                    .expect("template not found")
-            }
-        };
-        Self::_create_invoice_inner(
+        let tmpl = Self::_load_template(&env, &creator, &name, version);
+        Self::_instantiate_template(
             &env,
             creator,
             tmpl.recipients,
             tmpl.amounts,
-            Vec::new(&env),
             tmpl.token,
             deadline,
-            Vec::new(&env),
+        )
+    }
+
+    /// Issue #748: Instantiate a new invoice from resolved template values.
+    ///
+    /// Shared by `create_from_template` and `create_invoice_from_template` so
+    /// every template-created invoice gets identical defaults (no co-creators,
+    /// no early withdrawal, `OverflowBehavior::Reject`, flat 100% ratio split).
+    fn _instantiate_template(
+        env: &Env,
+        creator: Address,
+        recipients: Vec<Address>,
+        amounts: Vec<i128>,
+        token: Address,
+        deadline: u64,
+    ) -> u64 {
+        Self::_create_invoice_inner(
+            env,
+            creator,
+            recipients,
+            amounts,
+            Vec::new(env),
+            token,
+            deadline,
+            Vec::new(env),
             false,
             0,
             0,
             None,
-            Vec::new(&env),
-            Vec::new(&env),
+            Vec::new(env),
+            Vec::new(env),
             0,
             0,
             0,
             0,
-            Vec::new(&env),
+            Vec::new(env),
             None,
-            Vec::new(&env),
+            Vec::new(env),
             None,
             0,
             None,
@@ -12382,43 +12640,126 @@ impl SplitContract {
             None,
             OverflowBehavior::Reject,
             false,
-            Vec::new(&env),
+            Vec::new(env),
             None,
             None,
             None,
             0,
             0,
-            Vec::new(&env),
-            Vec::new(&env),
+            Vec::new(env),
+            Vec::new(env),
             None,
             None,
             None,
             None,
             None,
             None,
-            Vec::new(&env), // priorities
-            false,          // require_kyc
-            None,           // scheduled_release_at
-            None,           // min_payer_rep
-            None,           // release_delay_ledgers
-            None,           // metadata_hash
-            None,           // target_usd_cents
-            None,           // oracle
-            None,           // oracle_asset_pair_base
-            None,           // oracle_asset_pair_quote
-            None,           // escrow_hold_period
-            None,           // payment_open_at
-            None,           // payment_close_at
-            None,           // milestones
-            None,           // recipient_max_payouts
-            false,          // recipient_whitelist_enabled
-            None,           // release_condition_hash
-            0,              // early_bird_window_ledgers
-            0,              // early_bird_fee_bps
-            0,              // creator_fee_bps
-            Vec::new(&env), // ratios
-            1_u64,          // ratio_denominator
+            Vec::new(env), // priorities
+            false,         // require_kyc
+            None,          // scheduled_release_at
+            None,          // min_payer_rep
+            None,          // release_delay_ledgers
+            None,          // metadata_hash
+            None,          // target_usd_cents
+            None,          // oracle
+            None,          // oracle_asset_pair_base
+            None,          // oracle_asset_pair_quote
+            None,          // escrow_hold_period
+            None,          // payment_open_at
+            None,          // payment_close_at
+            None,          // milestones
+            None,          // recipient_max_payouts
+            false,         // recipient_whitelist_enabled
+            None,          // release_condition_hash
+            0,             // early_bird_window_ledgers
+            0,             // early_bird_fee_bps
+            0,             // creator_fee_bps
+            Vec::new(env), // ratios
+            1_u64,         // ratio_denominator
         )
+    }
+
+    /// Issue #748: Instantiate a new invoice from a saved template, applying
+    /// optional field overrides on top of the stored configuration.
+    ///
+    /// Only the creator who saved the template may instantiate it. Overrides
+    /// are validated with the same rules as `save_template` (parallel
+    /// `recipients`/`amounts`, strictly positive amounts, at least one
+    /// recipient), so an override can never produce a malformed invoice. The
+    /// `deadline` argument is used unless `overrides.deadline` is set.
+    ///
+    /// Emits `InvoiceCreatedFromTemplate` with the resolved template version
+    /// (`version` when supplied, otherwise the latest for `(creator, name)`).
+    pub fn create_invoice_from_template(
+        env: Env,
+        creator: Address,
+        name: Symbol,
+        deadline: u64,
+        version: Option<u32>,
+        overrides: Option<TemplateOverrides>,
+    ) -> u64 {
+        creator.require_auth();
+
+        let tmpl = Self::_load_template(&env, &creator, &name, version);
+        let mut recipients = tmpl.recipients;
+        let mut amounts = tmpl.amounts;
+        let mut token = tmpl.token;
+        let mut deadline = deadline;
+
+        // Merge overrides over the stored template, field by field.
+        if let Some(ov) = overrides {
+            if let Some(new_recipients) = ov.recipients {
+                recipients = new_recipients;
+            }
+            if let Some(new_amounts) = ov.amounts {
+                amounts = new_amounts;
+            }
+            if let Some(new_token) = ov.token {
+                token = new_token;
+            }
+            if let Some(new_deadline) = ov.deadline {
+                deadline = new_deadline;
+            }
+        }
+
+        assert!(
+            recipients.len() == amounts.len(),
+            "recipients and amounts length mismatch"
+        );
+        assert!(!recipients.is_empty(), "must have at least one recipient");
+        for amt in amounts.iter() {
+            assert!(amt > 0, "amounts must be positive");
+        }
+
+        // Resolve the effective version before `version` is consumed below.
+        let resolved_version = match version {
+            Some(v) => v,
+            None => env
+                .storage()
+                .persistent()
+                .get::<_, u32>(&template_version_count_key(&creator, &name))
+                .unwrap_or(0u32),
+        };
+
+        let invoice_id =
+            Self::_instantiate_template(&env, creator.clone(), recipients, amounts, token, deadline);
+
+        events::invoice_created_from_template(&env, invoice_id, &creator, &name, resolved_version);
+
+        invoice_id
+    }
+
+    /// Issue #748: Return a stored template by `(creator, name)`.
+    ///
+    /// `version` of `None` returns the latest saved version. Panics with
+    /// "template not found" when nothing is stored for that pair.
+    pub fn get_template_by_name(
+        env: Env,
+        creator: Address,
+        name: Symbol,
+        version: Option<u32>,
+    ) -> InvoiceTemplate {
+        Self::_load_template(&env, &creator, &name, version)
     }
 
     /// Link invoices into a group.
@@ -14533,6 +14874,81 @@ impl SplitContract {
                 rate_bps: 0,
                 treasury: env.current_contract_address(),
             })
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #751: protocol fee + treasury withdrawal
+    // -----------------------------------------------------------------------
+
+    /// Issue #751: Update the protocol fee rate, keeping the currently
+    /// configured treasury address.
+    ///
+    /// `bps` is in basis points and is capped at 500 (5%). Only callable by the
+    /// stored admin. Use [`Self::set_protocol_fee`] if the treasury address also
+    /// needs to change.
+    pub fn set_protocol_fee_bps(env: Env, admin: Address, bps: u32) {
+        let stored_admin = require_admin(&env);
+        assert!(stored_admin == admin, "not admin");
+        assert!(bps <= 500, "fee rate exceeds maximum (500 bps = 5%)");
+
+        let treasury = env
+            .storage()
+            .instance()
+            .get::<Symbol, ProtocolFeeConfig>(&protocol_fee_key())
+            .map(|cfg| cfg.treasury)
+            .unwrap_or_else(|| env.current_contract_address());
+
+        env.storage().instance().set(
+            &protocol_fee_key(),
+            &ProtocolFeeConfig {
+                rate_bps: bps,
+                treasury,
+            },
+        );
+    }
+
+    /// Issue #751: Current protocol fee rate in basis points (0 = disabled).
+    pub fn get_protocol_fee_bps(env: Env) -> u32 {
+        get_protocol_fee_bps_internal(&env)
+    }
+
+    /// Issue #751: Protocol fees currently held by the contract and available
+    /// for [`Self::withdraw_treasury`]. Fees accumulate on every `pay` call
+    /// while a non-zero protocol fee is configured.
+    pub fn get_treasury_balance(env: Env) -> i128 {
+        get_treasury_balance_internal(&env)
+    }
+
+    /// Issue #751: Transfer `amount` of accumulated protocol fees from the
+    /// contract treasury to the admin's wallet.
+    ///
+    /// Only the stored admin may call this and `amount` must be positive and no
+    /// larger than [`Self::get_treasury_balance`]. Fees are denominated in the
+    /// contract's settlement token, set by `initialize` (`usdc_token_key`).
+    pub fn withdraw_treasury(env: Env, admin: Address, amount: i128) {
+        let stored_admin = require_admin(&env);
+        assert!(stored_admin == admin, "not admin");
+        assert!(amount > 0, "amount must be positive");
+
+        let balance = get_treasury_balance_internal(&env);
+        assert!(amount <= balance, "insufficient treasury balance");
+
+        let token_addr: Address = env
+            .storage()
+            .instance()
+            .get(&usdc_token_key())
+            .expect("treasury token not set");
+        token::Client::new(&env, &token_addr).transfer(
+            &env.current_contract_address(),
+            &admin,
+            &amount,
+        );
+
+        env.storage()
+            .instance()
+            .set(&treasury_balance_key(), &(balance - amount));
+
+        events::treasury_withdrawn(&env, &admin, amount);
     }
 
     // -----------------------------------------------------------------------

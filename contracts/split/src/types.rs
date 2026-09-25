@@ -1839,6 +1839,29 @@ pub struct TemplateCounter {
     pub next_id: u64,
 }
 
+/// Issue #748: Optional field overrides applied when instantiating an invoice
+/// from a saved template.
+///
+/// Every field is optional; a `None` field means "keep the value stored in the
+/// template". Overrides are validated with exactly the same rules as
+/// `create_invoice` (parallel `recipients`/`amounts`, positive amounts, at
+/// least one recipient), so a partially-filled override struct cannot produce
+/// a malformed invoice.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct TemplateOverrides {
+    /// Replacement recipient list. When set, `amounts` must be set too and the
+    /// two lists must have the same length.
+    pub recipients: Option<Vec<Address>>,
+    /// Replacement per-recipient amounts, parallel to `recipients`.
+    pub amounts: Option<Vec<i128>>,
+    /// Replacement payment token.
+    pub token: Option<Address>,
+    /// Replacement deadline (unix timestamp). Takes precedence over the
+    /// `deadline` argument of `create_invoice_from_template`.
+    pub deadline: Option<u64>,
+}
+
 /// Issue #437: Delayed payout stored per recipient until claimable.
 #[contracttype]
 #[derive(Clone, Debug)]
