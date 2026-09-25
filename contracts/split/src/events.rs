@@ -1929,6 +1929,17 @@ pub fn auto_release_triggered(env: &Env, invoice_id: u64, released_at: u64) {
     );
 }
 
+/// Issue #811: an invoice was created depending on another invoice, which
+/// must be Released before this one can be.
+/// Topics: (split, dep_link, invoice_id)
+/// Data: prerequisite invoice id
+pub fn invoice_dependency_linked(env: &Env, invoice_id: u64, prerequisite_id: u64) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("dep_link"), invoice_id),
+        prerequisite_id,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

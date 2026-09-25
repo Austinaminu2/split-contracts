@@ -6006,6 +6006,9 @@ impl SplitContract {
         }
 
         events::invoice_created(env, id, &creator, total, &invoice.cross_chain_ref);
+        if let Some(prereq_id) = invoice.prerequisite_id {
+            events::invoice_dependency_linked(env, id, prereq_id);
+        }
         if let Some(ref addr) = invoice.forward_to {
             events::forward_configured(env, id, addr);
         }
@@ -8449,6 +8452,12 @@ impl SplitContract {
             .persistent()
             .get(&recipient_metrics_key(&recipient))
             .unwrap_or_default()
+    }
+
+    /// Issue #811: the invoice this invoice depends on, if any. The dependency
+    /// must be Released before this invoice can be released.
+    pub fn get_invoice_dependency(env: Env, invoice_id: u64) -> Option<u64> {
+        load_invoice(&env, invoice_id).prerequisite_id
     }
 
     /// Lock a recipient's share for an invoice (admin-only).

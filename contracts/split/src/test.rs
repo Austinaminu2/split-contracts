@@ -8806,3 +8806,44 @@ fn test_810_unreleased_invoice_does_not_count() {
     assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Pending);
     assert_eq!(c.get_recipient_metrics(&recipient).invoices_received_count, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #811: invoice dependency linking
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_811_dependency_link_event_and_getter() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+
+    let parent = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 9_999);
+    assert!(!env
+        .events()
+        .all()
+        .iter()
+        .any(|(_c, topics, _d)| topic1_is(&env, &topics, "dep_link")));
+    assert_eq!(c.get_invoice_dependency(&parent), None);
+
+    let mut recipients = Vec::new(&env);
+    recipients.push_back(recipient.clone());
+    let mut amounts = Vec::new(&env);
+    amounts.push_back(100_i128);
+    let opts = InvoiceOptions {
+        prerequisite_id: Some(parent),
+        ..default_options(&env)
+    };
+    let child = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999_u64, &opts);
+
+    let linked = env.events().all().iter().find_map(|(_c, topics, data)| {
+        if topic1_is(&env, &topics, "dep_link") {
+            Some(u64::try_from_val(&env, &data).unwrap())
+        } else {
+            None
+        }
+    });
+    assert_eq!(linked, Some(parent));
+    assert_eq!(c.get_invoice_dependency(&child), Some(parent));
+}
