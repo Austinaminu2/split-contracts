@@ -8651,3 +8651,45 @@ fn test_create_invoice_payment_window_only_one_or_none_ok() {
     assert!(id3 >= 1);
 }
 
+// ---------------------------------------------------------------------------
+// Issue #792: acquisition referrals
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_792_register_acquisition_stores_referrer_and_emits() {
+    let (env, contract_id, _token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let new_user = Address::generate(&env);
+    let referrer = Address::generate(&env);
+
+    assert_eq!(c.get_acquisition_referrer(&new_user), None);
+    c.register_acquisition(&new_user, &referrer);
+
+    assert!(env
+        .events()
+        .all()
+        .iter()
+        .any(|(_c, topics, _d)| topic1_is(&env, &topics, "acq_reg")));
+    assert_eq!(c.get_acquisition_referrer(&new_user), Some(referrer));
+}
+
+#[test]
+#[should_panic(expected = "acquisition already registered")]
+fn test_792_double_registration_rejected() {
+    let (env, contract_id, _token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let new_user = Address::generate(&env);
+
+    c.register_acquisition(&new_user, &Address::generate(&env));
+    c.register_acquisition(&new_user, &Address::generate(&env));
+}
+
+#[test]
+#[should_panic(expected = "cannot refer yourself")]
+fn test_792_self_referral_rejected() {
+    let (env, contract_id, _token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let user = Address::generate(&env);
+
+    c.register_acquisition(&user, &user);
+}

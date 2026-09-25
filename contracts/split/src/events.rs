@@ -1918,6 +1918,20 @@ pub fn deadline_extended(env: &Env, invoice_id: u64, old_deadline: u64, new_dead
 // Unit tests for the per-invoice event sequence counter (issue #708)
 // ---------------------------------------------------------------------------
 
+/// Issue #792: a user registered the referrer that acquired them.
+/// Topics: (split, acq_reg, new_user)
+/// Data: referrer
+pub fn acquisition_registered(env: &Env, new_user: &Address, referrer: &Address) {
+    env.events().publish(
+        (
+            symbol_short!("split"),
+            symbol_short!("acq_reg"),
+            new_user.clone(),
+        ),
+        referrer.clone(),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

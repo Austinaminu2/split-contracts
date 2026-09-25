@@ -477,6 +477,11 @@ fn credit_key(payer: &Address) -> (Symbol, Address) {
     (symbol_short!("credit"), payer.clone())
 }
 
+/// Issue #792: the referrer credited with acquiring a user.
+fn acquisition_referrer_key(user: &Address) -> (Symbol, Address) {
+    (symbol_short!("acq_ref"), user.clone())
+}
+
 /// Per-address referral count key (issue #87).
 fn referral_count_key(referrer: &Address) -> (Symbol, Address) {
     (symbol_short!("ref_cnt"), referrer.clone())
@@ -2953,6 +2958,28 @@ impl SplitContract {
     /// Issue #328: Return the current pause state (read-only; available while paused).
     pub fn is_paused(env: Env) -> bool {
         is_paused(&env)
+    }
+
+    /// Issue #792: record that `new_user` was acquired through `referrer`.
+    /// One-time only, callable by `new_user`; a user cannot refer themselves.
+    pub fn register_acquisition(env: Env, new_user: Address, referrer: Address) {
+        require_not_paused(&env);
+        new_user.require_auth();
+        assert!(new_user != referrer, "cannot refer yourself");
+        let key = acquisition_referrer_key(&new_user);
+        assert!(
+            !env.storage().persistent().has(&key),
+            "acquisition already registered"
+        );
+        env.storage().persistent().set(&key, &referrer);
+        events::acquisition_registered(&env, &new_user, &referrer);
+    }
+
+    /// Issue #792: the referrer that acquired `user`, if one was registered.
+    pub fn get_acquisition_referrer(env: Env, user: Address) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&acquisition_referrer_key(&user))
     }
 
     /// Issue #470: Contribute funds toward an invoice with partial refund mechanism for overpayments.
