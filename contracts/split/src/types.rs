@@ -1954,3 +1954,67 @@ mod tests {
         assert_eq!(InvoiceStatus::from_u8(100), InvoiceStatus::Pending);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #759: Creator rating aggregate
+// ---------------------------------------------------------------------------
+
+/// Aggregate on-chain rating for a creator, stored under creator_rating_key.
+///
+/// `average_stars_bps` is the mean star rating expressed in basis points
+/// (e.g. 4.5 stars = 45 000 bps).  Using basis points avoids floating-point
+/// arithmetic inside the contract.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct CreatorRating {
+    /// Total number of ratings submitted for this creator.
+    pub total_ratings: u32,
+    /// Average star rating in basis points (mean * 10 000).
+    pub average_stars_bps: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Issue #756: On-chain invoice notes
+// ---------------------------------------------------------------------------
+
+/// An immutable on-chain note posted by the invoice creator.
+///
+/// Notes are appended to a `Vec<Note>` stored under `notes_key(invoice_id)`
+/// and can never be deleted or edited after posting.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Note {
+    /// Ledger timestamp when the note was posted.
+    pub timestamp: u64,
+    /// Raw note content — maximum 512 bytes enforced at `add_note`.
+    pub content: Bytes,
+    /// Zero-based position of this note in the invoice's note list.
+    pub index: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Issue #758: Recurring subscription
+// ---------------------------------------------------------------------------
+
+/// On-chain subscription record created by `create_subscription`.
+///
+/// Anyone may call `trigger_subscription` once `last_triggered + interval_seconds`
+/// has elapsed to generate the next invoice in the series.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Subscription {
+    /// Creator / owner of the subscription.
+    pub creator: Address,
+    /// Recipient addresses for each generated invoice.
+    pub recipients: Vec<Address>,
+    /// Amounts owed to each recipient per cycle (parallel to `recipients`).
+    pub amounts: Vec<i128>,
+    /// Payment token used for all generated invoices.
+    pub token: Address,
+    /// Minimum seconds between invoice generations.
+    pub interval_seconds: u64,
+    /// Ledger timestamp of the last trigger (0 = never triggered).
+    pub last_triggered: u64,
+    /// Whether the subscription is currently paused.
+    pub paused: bool,
+}

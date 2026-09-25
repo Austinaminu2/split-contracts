@@ -145,4 +145,10 @@ pub enum ContractError {
     AlreadyPaid = 65,
     /// Recipient list is shorter than the configured minimum recipient count.
     TooFewRecipients = 66,
+    /// Issue #757: Creator attempted to cancel an invoice that already has one or more payments.
+    CannotCancelFundedInvoice = 67,
+    /// Issue #758: Subscription trigger was called before the interval has elapsed.
+    TooEarlyToTrigger = 68,
+    /// Issue #756: Invoice has reached the maximum allowed number of notes (10).
+    NoteLimitReached = 69,
 }
