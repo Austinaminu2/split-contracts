@@ -98,7 +98,7 @@ use types::{
     ProtocolFeeConfig, QueuedAction, RebateTier, Recipient, RepScore, ResolveAction,
     ResolveRule, Role, SimulateReleaseResult, SplitRule, SubscriptionParams, TimelockAction,
     Tombstone, Tranche, TransferRecord, TreasuryRecord, UpgradeProposal,
-    AutoReleaseCondition, RecipientMetrics,
+    AutoReleaseCondition, ConfigSnapshot, RecipientMetrics,
 };
 
 // ---------------------------------------------------------------------------
@@ -8458,6 +8458,21 @@ impl SplitContract {
     /// must be Released before this invoice can be released.
     pub fn get_invoice_dependency(env: Env, invoice_id: u64) -> Option<u64> {
         load_invoice(&env, invoice_id).prerequisite_id
+    }
+
+    /// Issue #812: read-only snapshot of contract-level configuration, for
+    /// backup and for checking a migrated deployment against its source.
+    pub fn export_config_snapshot(env: Env) -> ConfigSnapshot {
+        let instance = env.storage().instance();
+        ConfigSnapshot {
+            admin: instance.get(&admin_key()),
+            treasury: instance.get(&treasury_key()),
+            usdc_token: instance.get(&usdc_token_key()),
+            paused: is_paused(&env),
+            platform_fee_bps: instance.get(&platform_fee_bps_key()).unwrap_or(0u32),
+            invoice_count: env.storage().persistent().get(&counter_key()).unwrap_or(0u64),
+            schema_version: migrations::schema_version(&env),
+        }
     }
 
     /// Lock a recipient's share for an invoice (admin-only).

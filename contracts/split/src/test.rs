@@ -8847,3 +8847,33 @@ fn test_811_dependency_link_event_and_getter() {
     assert_eq!(linked, Some(parent));
     assert_eq!(c.get_invoice_dependency(&child), Some(parent));
 }
+
+// ---------------------------------------------------------------------------
+// Issue #812: contract state snapshot export
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_812_config_snapshot_reflects_contract_state() {
+    let (env, contract_id, token_id) = setup();
+    let c = client(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    c.initialize(&admin, &0_i128, &treasury, &token_id, &250_u32, &None, &0_u32, &0_u32, &0_u64);
+
+    let snapshot = c.export_config_snapshot();
+    assert_eq!(snapshot.admin, Some(admin.clone()));
+    assert_eq!(snapshot.treasury, Some(treasury));
+    assert_eq!(snapshot.usdc_token, Some(token_id.clone()));
+    assert_eq!(snapshot.platform_fee_bps, 250);
+    assert!(!snapshot.paused);
+    assert_eq!(snapshot.invoice_count, 0);
+    assert_eq!(snapshot.schema_version, c.get_schema_version());
+
+    env.ledger().set_timestamp(1_000);
+    make_invoice(&env, &c, &Address::generate(&env), &Address::generate(&env), 100, &token_id, 9_999);
+    c.pause(&admin);
+
+    let snapshot = c.export_config_snapshot();
+    assert!(snapshot.paused);
+    assert_eq!(snapshot.invoice_count, 1);
+}
