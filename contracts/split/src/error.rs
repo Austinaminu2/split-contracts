@@ -165,4 +165,10 @@ pub enum ContractError {
     NoVotingPower = 88,
     /// Issue #778: replay-protection nonce was already consumed.
     NonceAlreadyUsed = 89,
+    /// Issue #779: group does not exist.
+    GroupNotFound = 90,
+    /// Issue #779: group already holds the maximum of 20 invoices.
+    GroupFull = 91,
+    /// Issue #779: invoice is already a member of this group.
+    AlreadyInGroup = 92,
 }

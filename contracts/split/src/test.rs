@@ -8810,3 +8810,59 @@ fn test_nonce_expires_after_ttl() {
     env.ledger().set_sequence_number(env.ledger().sequence() + 3);
     assert!(!c.is_nonce_used(&n));
 }
+
+// ---------------------------------------------------------------------------
+// Issue #779: campaign groups
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_group_create_add_and_stats() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1_000);
+    env.ledger().set_timestamp(1_000);
+    let gid = c.create_group(&creator, &Symbol::new(&env, "campaign"), &Bytes::new(&env));
+    let a = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 2_000);
+    let b = make_invoice(&env, &c, &creator, &recipient, 200, &token_id, 2_000);
+    c.add_invoice_to_group(&gid, &a, &creator);
+    c.add_invoice_to_group(&gid, &b, &creator);
+    c.pay(&payer, &a, &100, &0, &false, &false, &None);
+    let s = c.get_group_stats(&gid);
+    assert_eq!(s.total_target, 300);
+    assert_eq!(s.total_funded, 100);
+    assert_eq!(s.invoice_count, 2);
+    assert_eq!(s.fully_funded_count, 1);
+    assert_eq!(c.get_group_invoices(&gid).len(), 2);
+}
+
+#[test]
+fn test_group_max_20_enforced() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+    let gid = c.create_group(&creator, &Symbol::new(&env, "big"), &Bytes::new(&env));
+    for _ in 0..20 {
+        let id = make_invoice(&env, &c, &creator, &recipient, 10, &token_id, 2_000);
+        c.add_invoice_to_group(&gid, &id, &creator);
+    }
+    let extra = make_invoice(&env, &c, &creator, &recipient, 10, &token_id, 2_000);
+    assert!(c.try_add_invoice_to_group(&gid, &extra, &creator).is_err());
+}
+
+#[test]
+fn test_group_non_creator_add_rejected() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let other = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+    let gid = c.create_group(&creator, &Symbol::new(&env, "g"), &Bytes::new(&env));
+    let id = make_invoice(&env, &c, &other, &recipient, 10, &token_id, 2_000);
+    assert!(c.try_add_invoice_to_group(&gid, &id, &other).is_err());
+}

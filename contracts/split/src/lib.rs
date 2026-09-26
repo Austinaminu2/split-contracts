@@ -61,6 +61,7 @@ mod stats;
 mod search_ext;
 mod treasury_gov_ext;
 mod nonce_ext;
+mod group_ext;
 
 #[cfg(test)]
 mod test;
@@ -15913,6 +15914,47 @@ impl SplitContract {
 
     pub fn is_nonce_used(env: Env, nonce: BytesN<32>) -> bool {
         nonce_ext::is_used(&env, &nonce)
+    }
+
+    // Issue #779: campaign groups linking related invoices.
+
+    pub fn create_group(env: Env, creator: Address, name: Symbol, description: Bytes) -> u64 {
+        group_ext::create_group(&env, creator, name, description)
+    }
+
+    /// Only the group creator (who must also own the invoice) may add; max 20.
+    pub fn add_invoice_to_group(env: Env, group_id: u64, invoice_id: u64, creator: Address) {
+        creator.require_auth();
+        let invoice = load_invoice(&env, invoice_id);
+        assert!(invoice.creator == creator, "not invoice creator");
+        group_ext::add_invoice(&env, group_id, invoice_id, &creator);
+    }
+
+    pub fn get_group_invoices(env: Env, group_id: u64) -> Vec<u64> {
+        group_ext::get_invoices(&env, group_id)
+    }
+
+    pub fn get_group_stats(env: Env, group_id: u64) -> group_ext::GroupStats {
+        let group = group_ext::get_group(&env, group_id);
+        let mut total_target: i128 = 0;
+        let mut total_funded: i128 = 0;
+        let mut fully_funded_count: u32 = 0;
+        for id in group.invoices.iter() {
+            let inv = load_invoice(&env, id);
+            let target: i128 = inv.amounts.iter().sum();
+            total_target += target;
+            total_funded += inv.funded;
+            if inv.funded >= target {
+                fully_funded_count += 1;
+            }
+        }
+        group_ext::GroupStats {
+            name: group.name,
+            total_target,
+            total_funded,
+            invoice_count: group.invoices.len(),
+            fully_funded_count,
+        }
     }
 
     pub fn get_invoice_funding_percentage(env: Env, invoice_id: u64) -> u32 {
