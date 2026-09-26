@@ -1967,6 +1967,30 @@ pub fn fully_funded_with_variance(env: &Env, invoice_id: u64, funded: i128, targ
     );
 }
 
+/// Issue #806: a recipient vetoed an invoice's release.
+/// Topics: (split, veto, invoice_id)
+/// Data: recipient
+pub fn release_vetoed(env: &Env, invoice_id: u64, recipient: &Address) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("veto"), invoice_id),
+        recipient.clone(),
+    );
+}
+
+/// Issue #806: a recipient cleared their veto on an invoice's release.
+/// Topics: (split, veto_clr, invoice_id)
+/// Data: recipient
+pub fn release_veto_cleared(env: &Env, invoice_id: u64, recipient: &Address) {
+    env.events().publish(
+        (
+            symbol_short!("split"),
+            symbol_short!("veto_clr"),
+            invoice_id,
+        ),
+        recipient.clone(),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

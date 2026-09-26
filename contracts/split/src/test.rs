@@ -9013,3 +9013,118 @@ fn test_805_variance_above_ten_percent_rejected() {
     );
     c.set_payment_variance(&creator, &id, &1_001_u32);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #806: recipient veto
+// ---------------------------------------------------------------------------
+
+/// A 300-unit invoice held until 5_000 (so full funding doesn't auto-release),
+/// fully paid, with `recipient` as its only recipient.
+fn funded_held_invoice_806(
+    env: &Env,
+    c: &SplitContractClient,
+    token_id: &Address,
+    recipient: &Address,
+) -> u64 {
+    let payer = Address::generate(env);
+    StellarAssetClient::new(env, token_id).mint(&payer, &300);
+    env.ledger().set_timestamp(1_000);
+
+    let mut recipients = Vec::new(env);
+    recipients.push_back(recipient.clone());
+    let mut amounts = Vec::new(env);
+    amounts.push_back(300_i128);
+    let opts = InvoiceOptions {
+        scheduled_release_at: Some(5_000),
+        ..default_options(env)
+    };
+    let id = c.create_invoice(
+        &Address::generate(env),
+        &recipients,
+        &amounts,
+        token_id,
+        &9_999_u64,
+        &opts,
+    );
+    c.pay(&payer, &id, &300_i128, &0_u64, &false, &false, &None);
+    id
+}
+
+#[test]
+#[should_panic(expected = "VetoBlocked")]
+fn test_806_veto_blocks_release() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let recipient = Address::generate(&env);
+    let id = funded_held_invoice_806(&env, &c, &token_id, &recipient);
+
+    c.veto_release(&recipient, &id);
+    assert!(env
+        .events()
+        .all()
+        .iter()
+        .any(|(_c, topics, _d)| topic1_is(&env, &topics, "veto")));
+    assert_eq!(c.get_release_vetoes(&id).len(), 1);
+
+    c.release(&id);
+}
+
+#[test]
+fn test_806_clearing_veto_re_enables_release() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let recipient = Address::generate(&env);
+    let id = funded_held_invoice_806(&env, &c, &token_id, &recipient);
+
+    c.veto_release(&recipient, &id);
+    c.clear_veto(&recipient, &id);
+    assert!(c.get_release_vetoes(&id).is_empty());
+
+    c.release(&id);
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Released);
+    assert_eq!(token_client(&env, &token_id).balance(&recipient), 300);
+}
+
+#[test]
+fn test_806_vetoed_invoice_does_not_auto_release_on_full_funding() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &100);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(
+        &env,
+        &c,
+        &Address::generate(&env),
+        &recipient,
+        100,
+        &token_id,
+        9_999,
+    );
+    c.veto_release(&recipient, &id);
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Pending);
+    assert_eq!(token_client(&env, &token_id).balance(&recipient), 0);
+}
+
+#[test]
+#[should_panic(expected = "only a recipient can veto")]
+fn test_806_non_recipient_cannot_veto() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(
+        &env,
+        &c,
+        &Address::generate(&env),
+        &Address::generate(&env),
+        100,
+        &token_id,
+        9_999,
+    );
+    c.veto_release(&Address::generate(&env), &id);
+}

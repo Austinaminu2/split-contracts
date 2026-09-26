@@ -1403,6 +1403,19 @@ fn anonymous_recipients_key(invoice_id: u64) -> (Symbol, u64) {
     (symbol_short!("anon_rec"), invoice_id)
 }
 
+/// Issue #806: recipients currently vetoing an invoice's release.
+fn release_vetoes_key(invoice_id: u64) -> (Symbol, u64) {
+    (symbol_short!("vetoes"), invoice_id)
+}
+
+/// Issue #806: recipients currently vetoing this invoice's release.
+fn release_vetoes(env: &Env, invoice_id: u64) -> Vec<Address> {
+    env.storage()
+        .persistent()
+        .get(&release_vetoes_key(invoice_id))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
 /// Issue #805: payment variance tolerance for an invoice, in basis points.
 fn payment_variance_key(invoice_id: u64) -> (Symbol, u64) {
     (symbol_short!("pay_var"), invoice_id)
@@ -7700,6 +7713,8 @@ impl SplitContract {
                         < (invoice.amounts.iter().sum::<i128>() * invoice.min_funding_bps as i128
                             / 10_000))
                 || has_release_delay
+                // Issue #806: hold funds while a recipient vetoes release.
+                || !release_vetoes(env, invoice_id).is_empty()
                 || invoice.held_until.is_some()
                 || invoice
                     .scheduled_release_at
@@ -8300,6 +8315,11 @@ impl SplitContract {
                 // Emit event the first time funds become releasable.
                 events::funds_unlocked(&env, invoice_id, unlock_at);
             }
+        }
+
+        // Issue #806: any standing recipient veto blocks release.
+        if !release_vetoes(env, invoice_id).is_empty() {
+            panic!("VetoBlocked");
         }
 
         // Approval check (issue #25).
@@ -15232,6 +15252,48 @@ impl SplitContract {
             .persistent()
             .get(&anonymous_recipients_key(invoice_id))
             .unwrap_or(false)
+    }
+
+    /// Issue #806: a recipient blocks release of this invoice until they call
+    /// `clear_veto`. Only listed recipients may veto, while the invoice is Pending.
+    pub fn veto_release(env: Env, recipient: Address, invoice_id: u64) {
+        require_not_paused(&env);
+        recipient.require_auth();
+        let invoice = load_invoice(&env, invoice_id);
+        assert!(
+            invoice.recipients.contains(&recipient),
+            "only a recipient can veto"
+        );
+        assert!(
+            invoice.status == InvoiceStatus::Pending,
+            "invoice is not pending"
+        );
+        let mut vetoes = release_vetoes(&env, invoice_id);
+        if !vetoes.contains(&recipient) {
+            vetoes.push_back(recipient.clone());
+            env.storage()
+                .persistent()
+                .set(&release_vetoes_key(invoice_id), &vetoes);
+        }
+        events::release_vetoed(&env, invoice_id, &recipient);
+    }
+
+    /// Issue #806: a recipient withdraws their veto.
+    pub fn clear_veto(env: Env, recipient: Address, invoice_id: u64) {
+        require_not_paused(&env);
+        recipient.require_auth();
+        let mut vetoes = release_vetoes(&env, invoice_id);
+        let index = vetoes.first_index_of(&recipient).expect("no veto to clear");
+        vetoes.remove(index);
+        env.storage()
+            .persistent()
+            .set(&release_vetoes_key(invoice_id), &vetoes);
+        events::release_veto_cleared(&env, invoice_id, &recipient);
+    }
+
+    /// Issue #806: recipients currently vetoing this invoice's release.
+    pub fn get_release_vetoes(env: Env, invoice_id: u64) -> Vec<Address> {
+        release_vetoes(&env, invoice_id)
     }
 
     /// Issue #805: accept funding within `variance_bps` below the target as
