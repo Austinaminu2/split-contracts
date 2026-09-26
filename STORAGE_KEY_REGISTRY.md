@@ -161,6 +161,12 @@ Keys with two or three fields for efficient multi-dimensional lookups.
 | `Schedule(invoice_id)` | `Vec<Option<u64>>` | Per-recipient `release_at`, aligned with `invoice.recipients` |
 | `Paid(invoice_id)` | `Vec<bool>` | Per-recipient paid flag for scheduled release |
 
+### Module-owned keys: `compliance_ext::ComplianceKey` (instance, #781)
+
+| Key | Value | Description |
+|-----|-------|-------------|
+| `KycRegistry` | `Address` | KYC registry contract exposing `is_approved(Address) -> bool` |
+
 ## Migration Guide
 
 When renaming a storage key between contract versions, use the migration helpers in `storage_keys.rs`:

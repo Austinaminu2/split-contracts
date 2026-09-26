@@ -149,4 +149,6 @@ pub enum ContractError {
     ScheduleInvalid = 120,
     /// Issue #780: no recipient schedule is set for this invoice.
     NoScheduleSet = 121,
+    /// Issue #781: payer is not approved by the KYC registry.
+    KycNotApproved = 122,
 }

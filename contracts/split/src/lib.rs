@@ -59,6 +59,7 @@ mod validation;
 mod calc;
 mod stats;
 mod schedule_ext;
+mod compliance_ext;
 
 #[cfg(test)]
 mod test;
@@ -7186,7 +7187,9 @@ impl SplitContract {
         };
         let remaining = total - invoice.funded;
 
-        if invoice.require_kyc {
+        // Issue #781: admin-set KYC registry (`is_approved`) takes precedence; the
+        // legacy `is_verified` contract is only used when no registry is set.
+        if invoice.require_kyc && !compliance_ext::check_kyc(env, payer) {
             let kyc_contract: Address = env
                 .storage()
                 .persistent()
@@ -8289,6 +8292,18 @@ impl SplitContract {
         require_cosigner_threshold_met(&env, invoice_id);
 
         Self::_release(&env, invoice_id, &mut invoice, &caller);
+    }
+
+    /// Issue #781: set the KYC registry consulted for `require_kyc` invoices (admin only).
+    pub fn set_kyc_registry(env: Env, admin: Address, registry: Address) {
+        let current = require_admin(&env);
+        assert!(current == admin, "NotAuthorized");
+        compliance_ext::set_registry(&env, &registry);
+    }
+
+    /// Issue #781: currently configured KYC registry, if any.
+    pub fn get_kyc_registry(env: Env) -> Option<Address> {
+        compliance_ext::get_registry(&env)
     }
 
     /// Issue #780: attach a per-recipient `release_at` schedule (creator only).

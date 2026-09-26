@@ -8700,3 +8700,83 @@ fn test_recipient_schedule_partial_then_remaining() {
     assert_eq!(c.get_pending_recipients(&id).len(), 0);
     assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Released);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #781: KYC registry gating
+// ---------------------------------------------------------------------------
+
+#[soroban_sdk::contract]
+pub struct MockKycRegistry;
+
+#[soroban_sdk::contractimpl]
+impl MockKycRegistry {
+    pub fn approve(env: Env, who: Address) {
+        env.storage().instance().set(&who, &true);
+    }
+    pub fn is_approved(env: Env, who: Address) -> bool {
+        env.storage().instance().get(&who).unwrap_or(false)
+    }
+}
+
+fn test_admin(env: &Env, contract_id: &Address) -> Address {
+    env.as_contract(contract_id, || {
+        env.storage().instance().get(&admin_key()).unwrap()
+    })
+}
+
+fn kyc_setup() -> (Env, Address, Address, Address, Address, u64) {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let registry = env.register(MockKycRegistry, ());
+    let admin = test_admin(&env, &contract_id);
+    c.set_kyc_registry(&admin, &registry);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let mut opts = default_options(&env);
+    opts.require_kyc = true;
+    let mut recipients = Vec::new(&env);
+    recipients.push_back(recipient);
+    let mut amounts = Vec::new(&env);
+    amounts.push_back(100_i128);
+    env.ledger().set_timestamp(1_000);
+    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999_u64, &opts);
+    (env, contract_id, token_id, registry, creator, id)
+}
+
+#[test]
+fn test_kyc_registry_approved_payer_pays() {
+    let (env, contract_id, token_id, registry, _creator, id) = kyc_setup();
+    let c = client(&env, &contract_id);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &100);
+    MockKycRegistryClient::new(&env, &registry).approve(&payer);
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Released);
+}
+
+#[test]
+#[should_panic]
+fn test_kyc_registry_unapproved_payer_rejected() {
+    let (env, contract_id, token_id, _registry, _creator, id) = kyc_setup();
+    let c = client(&env, &contract_id);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &100);
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+}
+
+#[test]
+fn test_kyc_not_required_skips_registry() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    // Registry address is not a deployed contract: any call to it would fail.
+    let admin = test_admin(&env, &contract_id);
+    c.set_kyc_registry(&admin, &Address::generate(&env));
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &100);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 9_999);
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Released);
+}
