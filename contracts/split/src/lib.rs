@@ -59,6 +59,7 @@ mod validation;
 mod calc;
 mod stats;
 mod match_pool_ext;
+mod analytics_ext;
 
 #[cfg(test)]
 mod test;
@@ -6005,6 +6006,8 @@ impl SplitContract {
                 .checked_add(1)
                 .expect("total_invoices overflow"),
         );
+        // Issue #787: global analytics aggregate.
+        analytics_ext::on_created(env, &creator);
 
         id
     }
@@ -7557,6 +7560,8 @@ impl SplitContract {
 
         append_audit_entry(env, invoice_id, symbol_short!("pay"), payer);
         events::payment_received(env, invoice_id, payer, credited_amount, &funding_token_for(&invoice));
+        // Issue #787: global analytics aggregate.
+        analytics_ext::on_paid(env, payer, credited_amount);
         // Issue #333: emit milestone events for any thresholds crossed by this payment.
         {
             let total_for_milestone: i128 = total; // already computed above
@@ -13055,6 +13060,22 @@ impl SplitContract {
             .persistent()
             .get(&referral_count_key(&referrer))
             .unwrap_or(0u64)
+    }
+
+    /// Issue #787: protocol-wide aggregate stats (invoices, paid/released/refunded
+    /// amounts, unique creators and payers).
+    pub fn get_protocol_stats(env: Env) -> analytics_ext::ProtocolStats {
+        let released: i128 = env
+            .storage()
+            .persistent()
+            .get(&total_released_key())
+            .unwrap_or(0i128);
+        let refunded: i128 = env
+            .storage()
+            .persistent()
+            .get(&total_refunded_key())
+            .unwrap_or(0i128);
+        analytics_ext::get(&env, released, refunded)
     }
 
     /// Return the contract-level analytics counters (issue #28).

@@ -159,6 +159,9 @@ Keys with two or three fields for efficient multi-dimensional lookups.
 | Enum | Variant | Tier | Issue | Value | Purpose |
 |------|---------|------|-------|-------|---------|
 | `MatchKey` (`match_pool_ext.rs`) | `Pool(u64)` | persistent | #786 | Vec<MatchPledge> | Matching pledges per invoice |
+| `AnalyticsKey` (`analytics_ext.rs`) | `Stats` | instance | #787 | StoredStats | Invoice count, paid total, unique creator/payer counts |
+| `AnalyticsKey` (`analytics_ext.rs`) | `Creator(Address)` | persistent | #787 | bool | Creator already counted |
+| `AnalyticsKey` (`analytics_ext.rs`) | `Payer(Address)` | persistent | #787 | bool | Payer already counted |
 
 ## Migration Guide
 
