@@ -8860,3 +8860,40 @@ fn test_801_partial_refund_of_fully_funded_invoice_rejected() {
     assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Pending);
     c.partial_refund(&creator, &id, &5_000_u32);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #799: partial refund keeps the invoice open
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_799_partial_refund_emits_events_and_allows_further_payments() {
+    let (env, contract_id, token_id, creator, payers, id) = setup_801(&[100, 100]);
+    let c = client(&env, &contract_id);
+    let tk = token_client(&env, &token_id);
+
+    c.partial_refund(&creator, &id, &5_000_u32);
+
+    let events = env.events().all();
+    let per_payer = events
+        .iter()
+        .filter(|(_c, topics, _d)| topic1_is(&env, topics, "pay_ref"))
+        .count();
+    let summary = events
+        .iter()
+        .filter(|(_c, topics, _d)| topic1_is(&env, topics, "prt_ref"))
+        .count();
+    assert_eq!(per_payer, 2);
+    assert_eq!(summary, 1);
+
+    let invoice = c.get_invoice(&id);
+    assert_eq!(invoice.status, InvoiceStatus::Pending);
+    assert_eq!(invoice.funded, 100);
+
+    // The first payer contributes again after being partly refunded.
+    let payer = payers.get(0).unwrap();
+    assert_eq!(tk.balance(&payer), 50);
+    c.pay(&payer, &id, &50_i128, &1_u64, &false, &false, &None);
+    assert_eq!(c.get_invoice(&id).funded, 150);
+    assert_eq!(tk.balance(&payer), 0);
+}
+
