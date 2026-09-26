@@ -155,4 +155,6 @@ pub enum ContractError {
     DelegateNotAuthorised = 70,
     /// Issue #769: Invoice already has the maximum of 3 delegates.
     DelegateLimitReached = 71,
+    /// Issue #770: Invoice is in a terminal status and its TTL cannot be bumped.
+    InvoiceTerminated = 72,
 }

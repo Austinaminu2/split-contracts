@@ -59,6 +59,7 @@ mod validation;
 mod calc;
 pub mod attest_ext;
 pub mod delegate_ext;
+pub mod ttl_ext;
 mod stats;
 
 #[cfg(test)]
@@ -1587,6 +1588,12 @@ fn contribution_key(invoice_id: u64, payer: &Address) -> (Symbol, u64, Address) 
 
 /// Target ledger count for instance-storage TTL extension (~30 days at 5 s/ledger).
 const INVOICE_HOT_TTL_LEDGERS: u32 = 518_400;
+
+/// Issue #770: ledgers added to an invoice's storage TTL by `bump_invoice_ttl`.
+///
+/// 1,000,000 ledgers at ~5 seconds per ledger is about 5,000,000 seconds, or
+/// roughly 57.9 days.
+pub const TTL_EXTENSION_LEDGERS: u32 = 1_000_000;
 
 /// Extend the contract instance TTL so all `InvoiceHot` entries remain live.
 ///
@@ -15783,35 +15790,6 @@ impl SplitContract {
             .persistent()
             .get(&template_id_key(&creator, template_id))
             .expect("template not found")
-    }
-
-    /// Issue #563: Extend the TTL of a live invoice.
-    ///
-    /// Callable by any address. Bumps the TTL of all DataKey entries associated
-    /// with the invoice to the maximum allowed duration, preventing silent
-    /// expiration during long-running campaigns or dispute periods.
-    pub fn bump_invoice_ttl(env: Env, invoice_id: u64) {
-        let _invoice = load_invoice(&env, invoice_id);
-
-        // Bump TTL for all known invoice keys
-        let min_ttl = constants::MIN_INVOICE_TTL_LEDGERS;
-        let max_ttl = constants::MAX_INVOICE_TTL_LEDGERS;
-
-        use storage_keys::InvoiceKey;
-        let keys = [
-            InvoiceKey::Invoice(invoice_id),
-            InvoiceKey::InvoiceExt(invoice_id),
-            InvoiceKey::InvoiceExt2(invoice_id),
-            InvoiceKey::RecipientsList(invoice_id),
-            InvoiceKey::AmountsList(invoice_id),
-            InvoiceKey::PaidFlags(invoice_id),
-        ];
-
-        for key in &keys {
-            env.storage()
-                .persistent()
-                .extend_ttl(key, min_ttl, max_ttl);
-        }
     }
 
     /// #522 — Walk the parent chain and verify:
