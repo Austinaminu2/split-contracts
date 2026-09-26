@@ -8766,3 +8766,49 @@ fn test_804_manual_resolution_before_timeout_takes_precedence() {
     env.ledger().set_sequence_number(100 + TIMEOUT_804);
     c.auto_close_dispute(&id);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #807: refund stress test
+// ---------------------------------------------------------------------------
+
+/// Locks in `refund` behaviour for a large payer set before any batching
+/// refactor: every one of 100 payers gets exactly their payment back.
+#[test]
+fn test_807_refund_returns_every_payment_with_100_payers() {
+    let (env, contract_id, token_id) = setup_initialized();
+    env.cost_estimate().budget().reset_unlimited();
+    let c = client(&env, &contract_id);
+    let tk = token_client(&env, &token_id);
+    let minter = StellarAssetClient::new(&env, &token_id);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(
+        &env,
+        &c,
+        &Address::generate(&env),
+        &Address::generate(&env),
+        1_000_000,
+        &token_id,
+        9_999,
+    );
+
+    let mut payers = Vec::new(&env);
+    for i in 0..100_i128 {
+        let payer = Address::generate(&env);
+        let amount = 10 + i;
+        minter.mint(&payer, &amount);
+        c.pay(&payer, &id, &amount, &0_u64, &false, &false, &None);
+        payers.push_back((payer, amount));
+    }
+    let total: i128 = (0..100_i128).map(|i| 10 + i).sum();
+    assert_eq!(c.get_invoice(&id).funded, total);
+    assert_eq!(tk.balance(&contract_id), total);
+
+    env.ledger().set_timestamp(10_000);
+    c.refund(&id);
+
+    for (payer, amount) in payers.iter() {
+        assert_eq!(tk.balance(&payer), amount);
+    }
+    assert_eq!(tk.balance(&contract_id), 0);
+}
