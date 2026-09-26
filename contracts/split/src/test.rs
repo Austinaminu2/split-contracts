@@ -8651,3 +8651,59 @@ fn test_create_invoice_payment_window_only_one_or_none_ok() {
     assert!(id3 >= 1);
 }
 
+
+// ---------------------------------------------------------------------------
+// Issue #776: creator invoice index
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_creator_invoices_empty_and_single() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let page = c.get_creator_invoices(&creator, &10, &None);
+    assert_eq!(page.items.len(), 0);
+    assert_eq!(page.total, 0);
+    assert_eq!(page.next_cursor, None);
+    let id = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 2_000);
+    let page = c.get_creator_invoices(&creator, &10, &None);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items.get(0).unwrap(), id);
+    assert_eq!(page.next_cursor, None);
+}
+
+#[test]
+fn test_creator_invoices_pagination_100() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    for _ in 0..100 {
+        make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 2_000);
+    }
+    let mut cursor = None;
+    let mut seen = 0u32;
+    let mut pages = 0;
+    loop {
+        let page = c.get_creator_invoices(&creator, &50, &cursor);
+        assert_eq!(page.total, 100);
+        seen += page.items.len();
+        pages += 1;
+        if page.next_cursor.is_none() {
+            break;
+        }
+        cursor = page.next_cursor;
+    }
+    assert_eq!(seen, 100);
+    assert_eq!(pages, 2);
+}
+
+#[test]
+#[should_panic]
+fn test_creator_invoices_limit_too_large() {
+    let (env, contract_id, _token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    c.get_creator_invoices(&creator, &51, &None);
+}

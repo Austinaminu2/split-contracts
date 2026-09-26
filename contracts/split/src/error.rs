@@ -145,4 +145,6 @@ pub enum ContractError {
     AlreadyPaid = 65,
     /// Recipient list is shorter than the configured minimum recipient count.
     TooFewRecipients = 66,
+    /// Issue #776: pagination `limit` exceeds the maximum of 50.
+    LimitTooLarge = 80,
 }

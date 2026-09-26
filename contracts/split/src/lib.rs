@@ -58,6 +58,7 @@ pub mod types;
 mod validation;
 mod calc;
 mod stats;
+mod search_ext;
 
 #[cfg(test)]
 mod test;
@@ -5065,6 +5066,7 @@ impl SplitContract {
             panic!("contract is paused");
         }
         creator.require_auth();
+        let index_creator = creator.clone();
 
         // Issue #439: check creator cancellation cooldown.
         let current_ledger = env.ledger().sequence() as u64;
@@ -5193,6 +5195,7 @@ impl SplitContract {
 
         apply_overfunding_policy(&env, id, overfunding_policy);
         apply_cosigner_config(&env, id, cosigners, cosigner_threshold);
+        search_ext::index_invoice(&env, &index_creator, id);
         id
     }
 
@@ -15837,6 +15840,17 @@ impl SplitContract {
 
     /// Get the funding percentage of an invoice as basis points.
     /// Returns (funded * 10_000 / total) as u32, or 0 if total is 0.
+    /// Issue #776: paginated list of invoice IDs created by `creator`.
+    /// `cursor` is the last-seen invoice ID; `limit` is capped at 50.
+    pub fn get_creator_invoices(
+        env: Env,
+        creator: Address,
+        limit: u32,
+        cursor: Option<u64>,
+    ) -> search_ext::InvoicePage {
+        search_ext::get_creator_invoices(&env, creator, limit, cursor)
+    }
+
     pub fn get_invoice_funding_percentage(env: Env, invoice_id: u64) -> u32 {
         let invoice = load_invoice(&env, invoice_id);
         let total: i128 = invoice.amounts.iter().sum();
