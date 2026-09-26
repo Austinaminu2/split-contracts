@@ -8766,3 +8766,47 @@ fn test_gov_double_vote_rejected() {
     c.vote_proposal(&id, &voter, &true);
     c.vote_proposal(&id, &voter, &true);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #778: replay-protection nonces
+// ---------------------------------------------------------------------------
+
+fn nonce_setup() -> (Env, SplitContractClient<'static>, u64, Address) {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1_000);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &creator, &recipient, 1_000, &token_id, 2_000);
+    // SAFETY of lifetime: the client borrows `env`, which is moved alongside it.
+    let c: SplitContractClient<'static> = unsafe { core::mem::transmute(c) };
+    (env, c, id, payer)
+}
+
+#[test]
+fn test_nonce_accepted_then_replay_rejected() {
+    let (env, c, id, payer) = nonce_setup();
+    let n = BytesN::from_array(&env, &[7u8; 32]);
+    assert!(!c.is_nonce_used(&n));
+    c.pay_with_nonce(&payer, &id, &100, &Some(n.clone()));
+    assert!(c.is_nonce_used(&n));
+    assert!(c.try_pay_with_nonce(&payer, &id, &100, &Some(n.clone())).is_err());
+}
+
+#[test]
+fn test_no_nonce_no_restriction() {
+    let (_env, c, id, payer) = nonce_setup();
+    c.pay_with_nonce(&payer, &id, &100, &None);
+    c.pay_with_nonce(&payer, &id, &100, &None);
+}
+
+#[test]
+fn test_nonce_expires_after_ttl() {
+    let (env, c, id, payer) = nonce_setup();
+    let n = BytesN::from_array(&env, &[9u8; 32]);
+    c.pay_with_nonce(&payer, &id, &100, &Some(n.clone()));
+    env.ledger().set_sequence_number(env.ledger().sequence() + 3);
+    assert!(!c.is_nonce_used(&n));
+}

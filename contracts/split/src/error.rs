@@ -163,4 +163,6 @@ pub enum ContractError {
     InvalidAllocation = 87,
     /// Issue #777: voter has zero token balance.
     NoVotingPower = 88,
+    /// Issue #778: replay-protection nonce was already consumed.
+    NonceAlreadyUsed = 89,
 }

@@ -60,6 +60,7 @@ mod calc;
 mod stats;
 mod search_ext;
 mod treasury_gov_ext;
+mod nonce_ext;
 
 #[cfg(test)]
 mod test;
@@ -15883,6 +15884,35 @@ impl SplitContract {
 
     pub fn get_proposal(env: Env, proposal_id: u64) -> treasury_gov_ext::Proposal {
         treasury_gov_ext::get_proposal(&env, proposal_id)
+    }
+
+    /// Issue #778: `pay` with optional replay-protection nonce. With `Some`,
+    /// the 32-byte nonce is checked/consumed in temporary storage (TTL 1
+    /// ledger) and `NonceConsumed` is emitted; `None` behaves like `pay`.
+    /// The existing sequential per-payer nonce is supplied automatically.
+    pub fn pay_with_nonce(
+        env: Env,
+        payer: Address,
+        invoice_id: u64,
+        amount: i128,
+        nonce: Option<BytesN<32>>,
+    ) {
+        if let Some(n) = &nonce {
+            nonce_ext::check_unused(&env, n);
+        }
+        let seq: u64 = env
+            .storage()
+            .persistent()
+            .get(&nonce_key(invoice_id, &payer))
+            .unwrap_or(0);
+        Self::pay(env.clone(), payer.clone(), invoice_id, amount, seq, false, false, None);
+        if let Some(n) = nonce {
+            nonce_ext::consume(&env, invoice_id, &payer, &n);
+        }
+    }
+
+    pub fn is_nonce_used(env: Env, nonce: BytesN<32>) -> bool {
+        nonce_ext::is_used(&env, &nonce)
     }
 
     pub fn get_invoice_funding_percentage(env: Env, invoice_id: u64) -> u32 {
