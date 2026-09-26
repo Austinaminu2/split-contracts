@@ -8757,3 +8757,42 @@ fn test_788_fewer_payers_than_top_n_shares_pool_among_all() {
     assert_eq!(tk.balance(&payers.get(0).unwrap()), 30);
     assert_eq!(tk.balance(&payers.get(1).unwrap()), 30);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #789: error code documentation
+// ---------------------------------------------------------------------------
+
+/// `docs/ERROR_CODES.md` must list exactly the `ContractError` variants and
+/// discriminants declared in `error.rs`.
+#[test]
+fn test_789_error_codes_doc_matches_enum() {
+    extern crate std;
+    use std::collections::BTreeMap;
+    use std::string::{String as StdString, ToString};
+
+    let source = include_str!("error.rs");
+    let enum_body = &source[source.find("pub enum ContractError {").expect("enum")..];
+    let enum_body = &enum_body[..enum_body.find("\n}").expect("enum end")];
+    let mut declared: BTreeMap<u32, StdString> = BTreeMap::new();
+    for line in enum_body.lines().map(str::trim) {
+        if let Some((name, rest)) = line.split_once(" = ") {
+            if let Ok(code) = rest.trim_end_matches(',').parse::<u32>() {
+                declared.insert(code, name.to_string());
+            }
+        }
+    }
+
+    let doc = include_str!("../../../docs/ERROR_CODES.md");
+    let mut documented: BTreeMap<u32, StdString> = BTreeMap::new();
+    for line in doc.lines() {
+        let cells: std::vec::Vec<&str> = line.split('|').map(str::trim).collect();
+        if cells.len() > 3 {
+            if let Ok(code) = cells[1].parse::<u32>() {
+                documented.insert(code, cells[2].trim_matches('`').to_string());
+            }
+        }
+    }
+
+    assert!(!declared.is_empty());
+    assert_eq!(documented, declared);
+}
