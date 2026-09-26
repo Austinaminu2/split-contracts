@@ -202,3 +202,4 @@ limit) are not consumed.
 | Enum::Variant | Module | Issue | Value | Purpose |
 |---------------|--------|-------|-------|---------|
 | `AttestKey::Attestations(id)` | `attest_ext.rs` | #768 | Vec<Attestation> | Third-party attestations for an invoice (max 5) |
+| `DelegateKey::Delegates(id)` | `delegate_ext.rs` | #769 | Vec<Address> | Creator-appointed delegates (max 3) |

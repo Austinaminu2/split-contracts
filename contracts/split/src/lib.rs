@@ -58,6 +58,7 @@ pub mod types;
 mod validation;
 mod calc;
 pub mod attest_ext;
+pub mod delegate_ext;
 mod stats;
 
 #[cfg(test)]
@@ -8136,6 +8137,7 @@ impl SplitContract {
         }
         env.storage().temporary().set(&re_key, &true);
         // ------------------------------------------------
+        delegate_ext::reject_delegate(&env, invoice_id, &caller);
         Self::_release_invoice_inner(&env, caller, invoice_id, preimage);
         env.storage().temporary().remove(&reentrancy_lock_key());
     }
@@ -8681,7 +8683,9 @@ impl SplitContract {
 
         let mut invoice = load_invoice(&env, invoice_id);
         assert!(
-            invoice.creator == creator || invoice.co_creators.iter().any(|c| c == creator),
+            invoice.creator == creator
+                || invoice.co_creators.iter().any(|c| c == creator)
+                || delegate_ext::is_delegate_of(&env, invoice_id, &creator),
             "only creator can pause invoice"
         );
         assert!(
@@ -8710,7 +8714,9 @@ impl SplitContract {
 
         let mut invoice = load_invoice(&env, invoice_id);
         assert!(
-            invoice.creator == creator || invoice.co_creators.iter().any(|c| c == creator),
+            invoice.creator == creator
+                || invoice.co_creators.iter().any(|c| c == creator)
+                || delegate_ext::is_delegate_of(&env, invoice_id, &creator),
             "only creator can resume invoice"
         );
         assert!(invoice.frozen, "invoice is not frozen");
@@ -11697,6 +11703,7 @@ impl SplitContract {
         // ------------------------------------------------
         require_not_paused(&env);
         caller.require_auth();
+        delegate_ext::reject_delegate(&env, invoice_id, &caller);
 
         let mut invoice = load_invoice(&env, invoice_id);
 
@@ -12536,6 +12543,14 @@ impl SplitContract {
             invoice.status == InvoiceStatus::Pending,
             "invoice is not pending"
         );
+
+        // Issue #769: a creator-appointed delegate may extend on the creator's behalf.
+        if delegate_ext::is_delegate_of(&env, invoice_id, &voter) {
+            let mut invoice = invoice;
+            invoice.deadline += 7 * 24 * 60 * 60;
+            save_invoice(&env, invoice_id, &invoice);
+            return;
+        }
 
         let has_paid = invoice.payments.iter().any(|p| p.payer == voter);
         assert!(has_paid, "only payers can vote");

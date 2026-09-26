@@ -151,4 +151,8 @@ pub enum ContractError {
     AttestationLimitReached = 68,
     /// Issue #768: No attestation from this attester exists on the invoice.
     AttestationNotFound = 69,
+    /// Issue #769: Delegate callers may not perform this creator-only operation.
+    DelegateNotAuthorised = 70,
+    /// Issue #769: Invoice already has the maximum of 3 delegates.
+    DelegateLimitReached = 71,
 }
