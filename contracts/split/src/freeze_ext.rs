@@ -37,7 +37,7 @@ pub(crate) fn require_not_frozen_global(env: &Env) {
     }
 }
 
-fn require_admin(env: &Env, admin: &Address) {
+pub(crate) fn require_admin(env: &Env, admin: &Address) {
     admin.require_auth();
     if let Some(stored) = env.storage().instance().get::<_, Address>(&admin_key()) {
         assert!(*admin == stored, "NotAuthorized");

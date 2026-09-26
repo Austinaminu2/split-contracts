@@ -74,6 +74,7 @@ mod storage_keys;
 mod migrations;
 mod hold_ext;
 mod freeze_ext;
+mod treasury_multi_ext;
 #[cfg(test)]
 mod ext_test_util;
 
@@ -10314,11 +10315,9 @@ impl SplitContract {
                 let fee = checked_bps_of(funded, proto_cfg.rate_bps, 10_000u128)
                     .expect("ArithmeticOverflow"); // Issue #482
                 if fee > 0 {
-                    funding_token_client.transfer(
-                        &env.current_contract_address(),
-                        &proto_cfg.treasury,
-                        &fee,
-                    );
+                    // Issue #774: fee stays in the contract and is credited to the
+                    // per-token treasury balance; admin withdraws via `withdraw_treasury`.
+                    treasury_multi_ext::credit(env, &funding_token_for(invoice), fee);
                     events::fee_paid(env, invoice_id, fee, &proto_cfg.treasury);
                 }
                 fee

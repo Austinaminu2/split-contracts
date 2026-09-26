@@ -33,6 +33,14 @@ pub(crate) fn mint(env: &Env, token: &Address, to: &Address, amount: i128) {
 
 /// Create a single-recipient invoice; returns (invoice_id, creator, recipient).
 pub(crate) fn new_invoice(f: &Fixture, amount: i128) -> (u64, Address, Address) {
+    new_invoice_with_token(f, &f.token, amount)
+}
+
+pub(crate) fn new_invoice_with_token(
+    f: &Fixture,
+    token: &Address,
+    amount: i128,
+) -> (u64, Address, Address) {
     let creator = Address::generate(&f.env);
     let recipient = Address::generate(&f.env);
     let mut recipients = Vec::new(&f.env);
@@ -43,7 +51,7 @@ pub(crate) fn new_invoice(f: &Fixture, amount: i128) -> (u64, Address, Address) 
         &creator,
         &recipients,
         &amounts,
-        &f.token,
+        token,
         &9_999_999_u64,
         &default_options(&f.env),
     );
