@@ -150,6 +150,9 @@ fn platform_fee_bps_key() -> Symbol {
     symbol_short!("plat_fee")
 }
 #[allow(dead_code)]
+/// Issue #803: maximum creator commission, in basis points (5%).
+const MAX_CREATOR_FEE_BPS: u32 = 500;
+
 fn creator_fee_bps_key(invoice_id: u64) -> (Symbol, u64) {
     (symbol_short!("cr_fee_bp"), invoice_id)
 }
@@ -5470,6 +5473,11 @@ impl SplitContract {
         assert!(
             (creator_fee_bps as u64 + platform_fee_bps as u64) <= 10_000,
             "FeeSumExceedsCap"
+        );
+        // Issue #803: creator commission is capped at 5%.
+        assert!(
+            creator_fee_bps <= MAX_CREATOR_FEE_BPS,
+            "creator_fee_bps exceeds 500 bps cap"
         );
         if tax_bps > 0 {
             assert!(

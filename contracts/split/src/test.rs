@@ -8651,3 +8651,31 @@ fn test_create_invoice_payment_window_only_one_or_none_ok() {
     assert!(id3 >= 1);
 }
 
+// ---------------------------------------------------------------------------
+// Issue #803: creator fee cap
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "creator_fee_bps exceeds 500 bps cap")]
+fn test_803_creator_fee_above_five_percent_rejected() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    env.ledger().set_timestamp(1_000);
+
+    let mut recipients = Vec::new(&env);
+    recipients.push_back(Address::generate(&env));
+    let mut amounts = Vec::new(&env);
+    amounts.push_back(1_000_i128);
+    let mut opts2 = default_options2(&env);
+    opts2.creator_fee_bps = 501;
+
+    c.create_invoice_ext(
+        &Address::generate(&env),
+        &recipients,
+        &amounts,
+        &token_id,
+        &9_999,
+        &default_options(&env),
+        &opts2,
+    );
+}
