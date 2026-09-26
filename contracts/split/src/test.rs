@@ -8780,3 +8780,56 @@ fn test_kyc_not_required_skips_registry() {
     c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
     assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Released);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #782: streaming payments
+// ---------------------------------------------------------------------------
+
+fn stream_setup() -> (Env, Address, Address, Address, u64) {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &10_000);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &creator, &recipient, 5_000, &token_id, 9_999);
+    (env, contract_id, token_id, payer, id)
+}
+
+#[test]
+fn test_stream_settle_after_n_ledgers() {
+    let (env, contract_id, _t, payer, id) = stream_setup();
+    let c = client(&env, &contract_id);
+    let sid = c.start_stream(&id, &payer, &10_i128);
+    let seq = env.ledger().sequence();
+    env.ledger().set_sequence_number(seq + 5);
+    c.settle_stream(&sid, &payer);
+    assert_eq!(c.get_invoice(&id).funded, 50);
+    assert_eq!(c.get_stream(&sid).total_settled, 50);
+    // Settling again in the same ledger charges nothing.
+    c.settle_stream(&sid, &payer);
+    assert_eq!(c.get_invoice(&id).funded, 50);
+}
+
+#[test]
+fn test_stream_cancel_settles_accrued() {
+    let (env, contract_id, _t, payer, id) = stream_setup();
+    let c = client(&env, &contract_id);
+    let sid = c.start_stream(&id, &payer, &7_i128);
+    let seq = env.ledger().sequence();
+    env.ledger().set_sequence_number(seq + 3);
+    c.cancel_stream(&sid, &payer);
+    assert_eq!(c.get_invoice(&id).funded, 21);
+    assert!(!c.get_stream(&sid).active);
+}
+
+#[test]
+fn test_stream_zero_ledger_settle() {
+    let (env, contract_id, _t, payer, id) = stream_setup();
+    let c = client(&env, &contract_id);
+    let sid = c.start_stream(&id, &payer, &10_i128);
+    c.settle_stream(&sid, &payer);
+    assert_eq!(c.get_invoice(&id).funded, 0);
+    assert!(c.get_stream(&sid).active);
+}

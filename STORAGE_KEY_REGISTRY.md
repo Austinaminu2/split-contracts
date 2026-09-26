@@ -167,6 +167,13 @@ Keys with two or three fields for efficient multi-dimensional lookups.
 |-----|-------|-------------|
 | `KycRegistry` | `Address` | KYC registry contract exposing `is_approved(Address) -> bool` |
 
+### Module-owned keys: `stream_ext::StreamKey` (#782)
+
+| Key | Tier | Value | Description |
+|-----|------|-------|-------------|
+| `Stream(stream_id)` | persistent | `Stream` | Streaming payment state |
+| `Counter` | instance | `u64` | Last issued stream id |
+
 ## Migration Guide
 
 When renaming a storage key between contract versions, use the migration helpers in `storage_keys.rs`:

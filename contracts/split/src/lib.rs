@@ -59,6 +59,7 @@ mod validation;
 mod calc;
 mod stats;
 mod schedule_ext;
+mod stream_ext;
 mod compliance_ext;
 
 #[cfg(test)]
@@ -8304,6 +8305,26 @@ impl SplitContract {
     /// Issue #781: currently configured KYC registry, if any.
     pub fn get_kyc_registry(env: Env) -> Option<Address> {
         compliance_ext::get_registry(&env)
+    }
+
+    /// Issue #782: start a per-ledger payment stream toward an invoice.
+    pub fn start_stream(env: Env, invoice_id: u64, payer: Address, amount_per_ledger: i128) -> u64 {
+        stream_ext::start(&env, invoice_id, &payer, amount_per_ledger)
+    }
+
+    /// Issue #782: settle the amount accrued since the last settlement.
+    pub fn settle_stream(env: Env, stream_id: u64, payer: Address) {
+        stream_ext::settle(&env, stream_id, &payer);
+    }
+
+    /// Issue #782: cancel a stream, settling accrued amount immediately.
+    pub fn cancel_stream(env: Env, stream_id: u64, payer: Address) {
+        stream_ext::cancel(&env, stream_id, &payer);
+    }
+
+    /// Issue #782: read a stream.
+    pub fn get_stream(env: Env, stream_id: u64) -> stream_ext::Stream {
+        stream_ext::get_stream(&env, stream_id)
     }
 
     /// Issue #780: attach a per-recipient `release_at` schedule (creator only).

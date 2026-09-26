@@ -151,4 +151,8 @@ pub enum ContractError {
     NoScheduleSet = 121,
     /// Issue #781: payer is not approved by the KYC registry.
     KycNotApproved = 122,
+    /// Issue #782: stream id does not exist.
+    StreamNotFound = 125,
+    /// Issue #782: stream has been cancelled.
+    StreamNotActive = 126,
 }
