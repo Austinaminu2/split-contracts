@@ -8936,3 +8936,80 @@ fn test_802_resume_all_invoices_re_enables_refund() {
 
     assert_eq!(token_client(&env, &token_id).balance(&payer), 500);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #805: payment variance tolerance
+// ---------------------------------------------------------------------------
+
+/// A 1_000-unit invoice with a 5% variance tolerance; returns the payer (holds 1_000).
+fn variance_invoice_805(
+    env: &Env,
+    c: &SplitContractClient,
+    token_id: &Address,
+    recipient: &Address,
+) -> (u64, Address) {
+    let creator = Address::generate(env);
+    let payer = Address::generate(env);
+    StellarAssetClient::new(env, token_id).mint(&payer, &1_000);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(env, c, &creator, recipient, 1_000, token_id, 9_999);
+    c.set_payment_variance(&creator, &id, &500_u32);
+    (id, payer)
+}
+
+#[test]
+fn test_805_payment_within_variance_releases_and_emits() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let recipient = Address::generate(&env);
+    let (id, payer) = variance_invoice_805(&env, &c, &token_id, &recipient);
+
+    c.pay(&payer, &id, &950_i128, &0_u64, &false, &false, &None);
+
+    assert!(env
+        .events()
+        .all()
+        .iter()
+        .any(|(_c, topics, _d)| topic1_is(&env, &topics, "var_fund")));
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Released);
+    assert_eq!(token_client(&env, &token_id).balance(&recipient), 950);
+}
+
+#[test]
+fn test_805_payment_outside_variance_stays_pending() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let recipient = Address::generate(&env);
+    let (id, payer) = variance_invoice_805(&env, &c, &token_id, &recipient);
+
+    c.pay(&payer, &id, &949_i128, &0_u64, &false, &false, &None);
+
+    assert!(!env
+        .events()
+        .all()
+        .iter()
+        .any(|(_c, topics, _d)| topic1_is(&env, &topics, "var_fund")));
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Pending);
+    assert_eq!(token_client(&env, &token_id).balance(&recipient), 0);
+}
+
+#[test]
+#[should_panic(expected = "variance exceeds 1000 bps")]
+fn test_805_variance_above_ten_percent_rejected() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(
+        &env,
+        &c,
+        &creator,
+        &Address::generate(&env),
+        1_000,
+        &token_id,
+        9_999,
+    );
+    c.set_payment_variance(&creator, &id, &1_001_u32);
+}

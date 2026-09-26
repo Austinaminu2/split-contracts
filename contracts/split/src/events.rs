@@ -1952,6 +1952,21 @@ pub fn invoice_system_resumed(env: &Env, admin: &Address) {
     );
 }
 
+/// Issue #805: an invoice was treated as fully funded because its total paid
+/// fell within the configured variance tolerance below the target.
+/// Topics: (split, var_fund, invoice_id)
+/// Data: (funded, target)
+pub fn fully_funded_with_variance(env: &Env, invoice_id: u64, funded: i128, target: i128) {
+    env.events().publish(
+        (
+            symbol_short!("split"),
+            symbol_short!("var_fund"),
+            invoice_id,
+        ),
+        (funded, target),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1403,6 +1403,29 @@ fn anonymous_recipients_key(invoice_id: u64) -> (Symbol, u64) {
     (symbol_short!("anon_rec"), invoice_id)
 }
 
+/// Issue #805: payment variance tolerance for an invoice, in basis points.
+fn payment_variance_key(invoice_id: u64) -> (Symbol, u64) {
+    (symbol_short!("pay_var"), invoice_id)
+}
+
+/// Issue #805: maximum payment variance tolerance (10%).
+const MAX_PAYMENT_VARIANCE_BPS: u32 = 1_000;
+
+/// Issue #805: true when `funded` is short of `total` but within the invoice's
+/// configured variance tolerance, i.e. `funded >= total * (1 - variance)`.
+fn funded_within_variance(env: &Env, invoice_id: u64, funded: i128, total: i128) -> bool {
+    let variance_bps: u32 = env
+        .storage()
+        .persistent()
+        .get(&payment_variance_key(invoice_id))
+        .unwrap_or(0);
+    if variance_bps == 0 || funded >= total {
+        return false;
+    }
+    let tolerance = checked_bps_of(total, variance_bps, 10_000u128).expect("ArithmeticOverflow");
+    funded >= total - tolerance
+}
+
 /// Issue #438: recipient commitment hash — persistent storage (invoice_id, index).
 // Issue #438: storage key for the recipient reveal scheme; the reveal entry
 // point that consumes it is not wired up yet.
@@ -7628,7 +7651,12 @@ impl SplitContract {
                 .set(&receipt_token_key(invoice_id, payer), &receipt_addr);
         }
 
-        if invoice.funded >= total {
+        // Issue #805: a total within the variance tolerance counts as fully funded.
+        let within_variance = funded_within_variance(env, invoice_id, invoice.funded, total);
+        if within_variance {
+            events::fully_funded_with_variance(env, invoice_id, invoice.funded, total);
+        }
+        if invoice.funded >= total || within_variance {
             if let Some(hold) = invoice.escrow_hold_period {
                 if invoice.held_until.is_none() {
                     let unlock = env.ledger().sequence().saturating_add(hold);
@@ -15204,6 +15232,26 @@ impl SplitContract {
             .persistent()
             .get(&anonymous_recipients_key(invoice_id))
             .unwrap_or(false)
+    }
+
+    /// Issue #805: accept funding within `variance_bps` below the target as
+    /// fully funded (max 1000 = 10%). Creator-only, while Pending.
+    pub fn set_payment_variance(env: Env, creator: Address, invoice_id: u64, variance_bps: u32) {
+        require_not_paused(&env);
+        creator.require_auth();
+        let invoice = load_invoice(&env, invoice_id);
+        assert!(invoice.creator == creator, "only creator");
+        assert!(
+            invoice.status == InvoiceStatus::Pending,
+            "invoice is not pending"
+        );
+        assert!(
+            variance_bps <= MAX_PAYMENT_VARIANCE_BPS,
+            "variance exceeds 1000 bps"
+        );
+        env.storage()
+            .persistent()
+            .set(&payment_variance_key(invoice_id), &variance_bps);
     }
 
     // -----------------------------------------------------------------------
