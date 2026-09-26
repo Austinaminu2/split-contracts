@@ -14004,13 +14004,19 @@ impl SplitContract {
     /// Propose a contract upgrade. Only the admin may call this.
     ///
     /// Stores a pending proposal with an eligible_at = now + 48 h.
-    /// Overwrites any existing proposal (only one active at a time).
+    /// Panics with "upgrade already pending" if a proposal exists (cancel it first).
     pub fn propose_upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
         require_admin(&env);
         let _ = admin;
 
-        const FORTY_EIGHT_HOURS: u64 = 48 * 60 * 60;
-        let eligible_at = env.ledger().timestamp().saturating_add(FORTY_EIGHT_HOURS);
+        assert!(
+            !env.storage().instance().has(&upgrade_proposal_key()),
+            "upgrade already pending"
+        );
+        let eligible_at = env
+            .ledger()
+            .timestamp()
+            .saturating_add(constants::UPGRADE_TIMELOCK_SECONDS);
 
         let proposal = UpgradeProposal {
             new_wasm_hash: new_wasm_hash.clone(),
@@ -14025,8 +14031,10 @@ impl SplitContract {
 
     /// Execute a pending upgrade once the 48-hour timelock has elapsed.
     ///
-    /// Callable by anyone after the timelock expires. Clears the proposal on success.
-    pub fn execute_upgrade(env: Env) {
+    /// Admin-only (issue #785). Clears the proposal on success.
+    pub fn execute_upgrade(env: Env, admin: Address) {
+        require_admin(&env);
+        let _ = admin;
         let proposal: UpgradeProposal = env
             .storage()
             .instance()
@@ -14056,6 +14064,11 @@ impl SplitContract {
         env.storage().instance().remove(&upgrade_proposal_key());
 
         events::upgrade_cancelled(&env, &admin_addr);
+    }
+
+    /// Return the pending upgrade proposal, or None (issue #785 name).
+    pub fn get_pending_upgrade(env: Env) -> Option<UpgradeProposal> {
+        env.storage().instance().get(&upgrade_proposal_key())
     }
 
     /// Return the pending upgrade proposal, or None if none is active.

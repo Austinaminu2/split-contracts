@@ -7797,7 +7797,7 @@ fn test_310_execute_upgrade_before_timelock_panics() {
     c.propose_upgrade(&Address::generate(&env), &wasm_hash);
 
     // Try to execute immediately — should panic
-    c.execute_upgrade();
+    c.execute_upgrade(&Address::generate(&env));
 }
 
 #[test]
@@ -7826,6 +7826,7 @@ fn test_310_cancel_without_proposal_panics() {
 }
 
 #[test]
+#[should_panic(expected = "upgrade already pending")]
 fn test_310_propose_overwrites_existing() {
     let (env, contract_id, token_id) = setup();
     init_contract(&env, &contract_id, &token_id);
@@ -7835,8 +7836,26 @@ fn test_310_propose_overwrites_existing() {
     let hash1: BytesN<32> = BytesN::from_array(&env, &[1u8; 32]);
     let hash2: BytesN<32> = BytesN::from_array(&env, &[2u8; 32]);
     c.propose_upgrade(&Address::generate(&env), &hash1);
-    // Second proposal overwrites the first — no panic.
+    // Issue #785: a second proposal while one is pending is rejected.
     c.propose_upgrade(&Address::generate(&env), &hash2);
+}
+
+#[test]
+fn test_785_pending_upgrade_and_repropose_after_cancel() {
+    let (env, contract_id, token_id) = setup();
+    init_contract(&env, &contract_id, &token_id);
+    let c = client(&env, &contract_id);
+
+    env.ledger().set_timestamp(10);
+    let hash: BytesN<32> = BytesN::from_array(&env, &[7u8; 32]);
+    c.propose_upgrade(&Address::generate(&env), &hash);
+    let p = c.get_pending_upgrade().unwrap();
+    assert_eq!(p.eligible_at, 10 + constants::UPGRADE_TIMELOCK_SECONDS);
+    assert_eq!(constants::UPGRADE_TIMELOCK_SECONDS, 172_800);
+    c.cancel_upgrade(&Address::generate(&env));
+    assert!(c.get_pending_upgrade().is_none());
+    c.propose_upgrade(&Address::generate(&env), &hash);
+    assert!(c.get_pending_upgrade().is_some());
 }
 
 // ---------------------------------------------------------------------------
