@@ -75,6 +75,7 @@ mod migrations;
 mod hold_ext;
 mod freeze_ext;
 mod treasury_multi_ext;
+mod velocity_ext;
 #[cfg(test)]
 mod ext_test_util;
 
@@ -7516,6 +7517,8 @@ impl SplitContract {
         // Capture funded total before and after mutation (used for milestone check below).
         let prev_funded = invoice.funded;
         invoice.funded += credited_amount;
+        // Issue #775: hourly funding velocity histogram.
+        velocity_ext::record(env, invoice_id, credited_amount);
 
         // Track lifetime contributions separately; never decremented on withdrawal/refund.
         let cumulative_key = cumulative_contributed_key(invoice_id);

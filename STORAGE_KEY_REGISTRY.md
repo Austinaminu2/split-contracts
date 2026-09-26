@@ -204,3 +204,5 @@ These modules own their `#[contracttype]` key enum so they consume no variant of
 | `freeze_ext.rs` (#773) | `FreezeKey::Frozen` | instance | Emergency global freeze flag (bool) |
 | `treasury_multi_ext.rs` (#774) | `TreasuryKey::Balance(Address)` | persistent | Accrued protocol fees per token (i128) |
 | `treasury_multi_ext.rs` (#774) | `TreasuryKey::Tokens` | persistent | Vec<Address> of tokens that have accrued fees |
+| `velocity_ext.rs` (#775) | `VelocityKey::Bucket(u64, u64)` | persistent | (invoice_id, hour) -> amount paid that hour (max 168 buckets/invoice) |
+| `velocity_ext.rs` (#775) | `VelocityKey::Hours(u64)` | persistent | Ascending Vec<u64> of active hour buckets per invoice |
