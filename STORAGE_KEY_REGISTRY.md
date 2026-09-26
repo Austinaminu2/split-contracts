@@ -192,3 +192,13 @@ Run tests with:
 ```sh
 cargo test --lib storage_keys
 ```
+
+## Persistent Storage: module-owned key enums
+
+Newer features keep their keys in small `#[contracttype]` enums that live next to
+their logic, so the shared `StorageKey` / `InvoiceKey` enums (50-variant Soroban
+limit) are not consumed.
+
+| Enum::Variant | Module | Issue | Value | Purpose |
+|---------------|--------|-------|-------|---------|
+| `AttestKey::Attestations(id)` | `attest_ext.rs` | #768 | Vec<Attestation> | Third-party attestations for an invoice (max 5) |

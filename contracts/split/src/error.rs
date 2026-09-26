@@ -145,4 +145,10 @@ pub enum ContractError {
     AlreadyPaid = 65,
     /// Recipient list is shorter than the configured minimum recipient count.
     TooFewRecipients = 66,
+    /// Issue #768: Attestation statement exceeds the 256-byte maximum.
+    AttestationStatementTooLong = 67,
+    /// Issue #768: Invoice already holds the maximum of 5 attestations.
+    AttestationLimitReached = 68,
+    /// Issue #768: No attestation from this attester exists on the invoice.
+    AttestationNotFound = 69,
 }

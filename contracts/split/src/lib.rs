@@ -57,10 +57,11 @@ mod events;
 pub mod types;
 mod validation;
 mod calc;
+pub mod attest_ext;
 mod stats;
 
 #[cfg(test)]
-mod test;
+pub(crate) mod test;
 
 #[cfg(test)]
 mod fuzz_tests;
