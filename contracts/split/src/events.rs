@@ -1932,6 +1932,27 @@ pub fn reward_distributed(env: &Env, invoice_id: u64, recipient: &Address, amoun
     );
 }
 
+/// Issue #790: a co-funding round closed; any amount above the hard cap was
+/// refunded pro-rata.
+/// Topics: (split, rnd_close, invoice_id)
+/// Data: (total_raised, overflow, refunded_count)
+pub fn round_closed(
+    env: &Env,
+    invoice_id: u64,
+    total_raised: i128,
+    overflow: i128,
+    refunded_count: u32,
+) {
+    env.events().publish(
+        (
+            symbol_short!("split"),
+            symbol_short!("rnd_close"),
+            invoice_id,
+        ),
+        (total_raised, overflow, refunded_count),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

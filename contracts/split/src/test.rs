@@ -8796,3 +8796,126 @@ fn test_789_error_codes_doc_matches_enum() {
     assert!(!declared.is_empty());
     assert_eq!(documented, declared);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #790: co-funding round with hard cap
+// ---------------------------------------------------------------------------
+
+/// A 1_000-unit invoice run as a round capped at 600 that ends at 5_000,
+/// paid by one fresh payer per entry in `payments`. Returns (id, payers).
+fn funding_round_790(
+    env: &Env,
+    c: &SplitContractClient,
+    token_id: &Address,
+    payments: &[i128],
+) -> (u64, Vec<Address>) {
+    let sa = StellarAssetClient::new(env, token_id);
+    let creator = Address::generate(env);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(
+        env,
+        c,
+        &creator,
+        &Address::generate(env),
+        1_000,
+        token_id,
+        9_999,
+    );
+    c.set_funding_round(&creator, &id, &600_i128, &5_000_u64);
+
+    let mut payers = Vec::new(env);
+    for amount in payments {
+        let payer = Address::generate(env);
+        sa.mint(&payer, amount);
+        c.pay(&payer, &id, amount, &0_u64, &false, &false, &None);
+        payers.push_back(payer);
+    }
+    (id, payers)
+}
+
+#[test]
+fn test_790_close_under_cap_refunds_nothing() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let (id, payers) = funding_round_790(&env, &c, &token_id, &[300, 200]);
+
+    env.ledger().set_timestamp(5_000);
+    c.close_round(&id);
+
+    assert_eq!(
+        c.get_round_info(&id),
+        RoundInfo {
+            total_raised: 500,
+            hard_cap: 600,
+            round_end: 5_000,
+            closed: true,
+            overflow: 0
+        }
+    );
+    assert_eq!(c.get_invoice(&id).funded, 500);
+    assert_eq!(
+        token_client(&env, &token_id).balance(&payers.get(0).unwrap()),
+        0
+    );
+}
+
+#[test]
+fn test_790_close_over_cap_refunds_excess_pro_rata() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let tk = token_client(&env, &token_id);
+    let (id, payers) = funding_round_790(&env, &c, &token_id, &[300, 300, 200]);
+
+    let open = c.get_round_info(&id);
+    assert!(!open.closed);
+    assert_eq!((open.total_raised, open.overflow), (800, 200));
+
+    env.ledger().set_timestamp(5_000);
+    c.close_round(&id);
+
+    assert!(env.events().all().iter().any(|(_c, topics, _d)| topic1_is(
+        &env,
+        &topics,
+        "rnd_close"
+    )));
+    // 200 overflow on 800 raised = 25% of each contribution.
+    assert_eq!(tk.balance(&payers.get(0).unwrap()), 75);
+    assert_eq!(tk.balance(&payers.get(1).unwrap()), 75);
+    assert_eq!(tk.balance(&payers.get(2).unwrap()), 50);
+    assert_eq!(c.get_invoice(&id).funded, 600);
+    assert_eq!(tk.balance(&contract_id), 600);
+    assert_eq!(
+        c.get_round_info(&id),
+        RoundInfo {
+            total_raised: 800,
+            hard_cap: 600,
+            round_end: 5_000,
+            closed: true,
+            overflow: 200
+        }
+    );
+}
+
+#[test]
+#[should_panic(expected = "round has not ended")]
+fn test_790_close_before_round_end_panics() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let (id, _payers) = funding_round_790(&env, &c, &token_id, &[300]);
+
+    env.ledger().set_timestamp(4_999);
+    c.close_round(&id);
+}
+
+#[test]
+#[should_panic(expected = "round already closed")]
+fn test_790_round_closes_only_once() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let (id, _payers) = funding_round_790(&env, &c, &token_id, &[300]);
+
+    env.ledger().set_timestamp(5_000);
+    c.close_round(&id);
+    c.close_round(&id);
+}
