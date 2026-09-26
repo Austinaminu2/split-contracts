@@ -145,4 +145,7 @@ pub enum ContractError {
     AlreadyPaid = 65,
     /// Recipient list is shorter than the configured minimum recipient count.
     TooFewRecipients = 66,
+    /// Issue #773: the contract is under an emergency admin freeze; all mutating
+    /// operations are rejected until `unfreeze_contract` is called.
+    ContractFrozen = 100,
 }

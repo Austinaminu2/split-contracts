@@ -201,3 +201,4 @@ These modules own their `#[contracttype]` key enum so they consume no variant of
 |--------|---------------|------|---------|
 | `hold_ext.rs` (#772) | `HoldKey::Secs(u64)` | persistent | Per-invoice escrow hold length in seconds |
 | `hold_ext.rs` (#772) | `HoldKey::FundedAt(u64)` | persistent | Timestamp the invoice first became fully funded |
+| `freeze_ext.rs` (#773) | `FreezeKey::Frozen` | instance | Emergency global freeze flag (bool) |

@@ -73,6 +73,7 @@ mod storage_keys;
 
 mod migrations;
 mod hold_ext;
+mod freeze_ext;
 #[cfg(test)]
 mod ext_test_util;
 
@@ -2243,11 +2244,13 @@ fn assert_not_paused(env: &Env) -> Result<(), ContractError> {
 
 fn require_not_paused(env: &Env) {
     migrations::require_schema_current(env);
+    freeze_ext::require_not_frozen_global(env);
     assert_not_paused(env).expect("contract is paused");
 }
 
 fn check_not_paused(env: &Env) {
     migrations::require_schema_current(env);
+    freeze_ext::require_not_frozen_global(env);
     if assert_not_paused(env).is_err() {
         panic!("ContractPaused");
     }
@@ -11123,6 +11126,7 @@ impl SplitContract {
     /// `refund_grace_secs`) has passed — callers should not have to make a
     /// separate `notify_expired` call just to unlock their funds.
     pub fn refund(env: Env, invoice_id: u64) {
+        freeze_ext::require_not_frozen_global(&env);
         // --- Reentrancy guard (issue #451-reentrancy) ---
         let re_key = reentrancy_lock_key();
         if env.storage().temporary().has(&re_key) {
@@ -11695,6 +11699,7 @@ impl SplitContract {
     /// Cancel an invoice. Refunds any payments already made.
     /// Issue #89: If stake exists, distributes it equally among unique payers.
     pub fn cancel_invoice(env: Env, caller: Address, invoice_id: u64) {
+        freeze_ext::require_not_frozen_global(&env);
         // --- Reentrancy guard (issue #451-reentrancy) ---
         let re_key = reentrancy_lock_key();
         if env.storage().temporary().has(&re_key) {
