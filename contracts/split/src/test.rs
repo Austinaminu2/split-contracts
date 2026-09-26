@@ -8897,3 +8897,42 @@ fn test_799_partial_refund_emits_events_and_allows_further_payments() {
     assert_eq!(tk.balance(&payer), 0);
 }
 
+// ---------------------------------------------------------------------------
+// Issue #802: pause_all_invoices blocks release and refund too
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "contract is paused")]
+fn test_802_pause_all_invoices_blocks_release() {
+    let (env, contract_id, _token_id, admin, _payer, id) = setup_800();
+    let c = client(&env, &contract_id);
+
+    c.pause_all_invoices(&admin);
+    c.release(&id);
+}
+
+#[test]
+#[should_panic(expected = "contract is paused")]
+fn test_802_pause_all_invoices_blocks_refund() {
+    let (env, contract_id, _token_id, admin, payer, id) = setup_800();
+    let c = client(&env, &contract_id);
+
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    env.ledger().set_timestamp(10_000);
+    c.pause_all_invoices(&admin);
+    c.refund(&id);
+}
+
+#[test]
+fn test_802_resume_all_invoices_re_enables_refund() {
+    let (env, contract_id, token_id, admin, payer, id) = setup_800();
+    let c = client(&env, &contract_id);
+
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    env.ledger().set_timestamp(10_000);
+    c.pause_all_invoices(&admin);
+    c.resume_all_invoices(&admin);
+    c.refund(&id);
+
+    assert_eq!(token_client(&env, &token_id).balance(&payer), 500);
+}
