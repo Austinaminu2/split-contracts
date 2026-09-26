@@ -1918,6 +1918,24 @@ pub fn deadline_extended(env: &Env, invoice_id: u64, old_deadline: u64, new_dead
 // Unit tests for the per-invoice event sequence counter (issue #708)
 // ---------------------------------------------------------------------------
 
+/// Issue #804: a dispute was resolved automatically after its timeout elapsed.
+/// Topics: (split, disp_auto, invoice_id)
+/// Data: default decision applied (`release` or `refund`)
+pub fn dispute_auto_resolved(env: &Env, invoice_id: u64, decision: &DisputeOutcome) {
+    let decision_sym = match decision {
+        DisputeOutcome::Release | DisputeOutcome::Approved => symbol_short!("release"),
+        DisputeOutcome::Refund | DisputeOutcome::Refunded => symbol_short!("refund"),
+    };
+    env.events().publish(
+        (
+            symbol_short!("split"),
+            symbol_short!("disp_auto"),
+            invoice_id,
+        ),
+        decision_sym,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

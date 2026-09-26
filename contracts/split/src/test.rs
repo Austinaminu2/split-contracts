@@ -8679,3 +8679,90 @@ fn test_803_creator_fee_above_five_percent_rejected() {
         &opts2,
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #804: dispute timeout auto-resolve
+// ---------------------------------------------------------------------------
+
+const TIMEOUT_804: u32 = 50;
+
+/// Initialized contract with a 50-ledger dispute timeout and a partly paid
+/// invoice under an active dispute raised by its payer at ledger 100.
+fn disputed_invoice_804() -> (Env, Address, u64) {
+    let (env, contract_id, token_id) = setup();
+    let c = client(&env, &contract_id);
+    let admin = Address::generate(&env);
+    c.initialize(
+        &admin,
+        &0_i128,
+        &Address::generate(&env),
+        &token_id,
+        &0_u32,
+        &None,
+        &0_u32,
+        &0_u32,
+        &0_u64,
+    );
+    c.set_dispute_timeout(&admin, &TIMEOUT_804);
+
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &100);
+    env.ledger().set_timestamp(1_000);
+    env.ledger().set_sequence_number(100);
+
+    let id = make_invoice(
+        &env,
+        &c,
+        &Address::generate(&env),
+        &Address::generate(&env),
+        300,
+        &token_id,
+        9_999,
+    );
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    c.raise_invoice_dispute(&id, &payer, &BytesN::from_array(&env, &[7u8; 32]));
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Disputed);
+    (env, contract_id, id)
+}
+
+#[test]
+fn test_804_auto_close_after_timeout_emits_auto_resolved() {
+    let (env, contract_id, id) = disputed_invoice_804();
+    let c = client(&env, &contract_id);
+
+    env.ledger().set_sequence_number(100 + TIMEOUT_804);
+    c.auto_close_dispute(&id);
+
+    let decision = env.events().all().iter().find_map(|(_c, topics, data)| {
+        if topic1_is(&env, &topics, "disp_auto") {
+            Some(Symbol::try_from_val(&env, &data).unwrap())
+        } else {
+            None
+        }
+    });
+    assert_eq!(decision, Some(Symbol::new(&env, "release")));
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Pending);
+}
+
+#[test]
+#[should_panic(expected = "dispute timeout has not elapsed")]
+fn test_804_auto_close_before_timeout_rejected() {
+    let (env, contract_id, id) = disputed_invoice_804();
+    let c = client(&env, &contract_id);
+
+    env.ledger().set_sequence_number(100 + TIMEOUT_804 - 1);
+    c.auto_close_dispute(&id);
+}
+
+#[test]
+#[should_panic(expected = "invoice is not disputed")]
+fn test_804_manual_resolution_before_timeout_takes_precedence() {
+    let (env, contract_id, id) = disputed_invoice_804();
+    let c = client(&env, &contract_id);
+
+    c.resolve_invoice_dispute(&id, &Address::generate(&env), &DisputeOutcome::Release);
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Pending);
+
+    env.ledger().set_sequence_number(100 + TIMEOUT_804);
+    c.auto_close_dispute(&id);
+}

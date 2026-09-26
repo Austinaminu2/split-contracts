@@ -3710,6 +3710,8 @@ impl SplitContract {
         invoice.disputed = false;
         save_invoice(&env, invoice_id, &invoice);
         events::dispute_expired(&env, invoice_id);
+        // Issue #804: the timeout default is to release (funds become releasable).
+        events::dispute_auto_resolved(&env, invoice_id, &DisputeOutcome::Release);
         events::invoice_state_changed(&env, invoice_id, Some(&InvoiceStatus::Disputed),
             &InvoiceStatus::Pending, &env.current_contract_address());
         append_audit_entry(&env, invoice_id, symbol_short!("disp_cls"), &env.current_contract_address());
