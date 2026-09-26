@@ -145,4 +145,12 @@ pub enum ContractError {
     AlreadyPaid = 65,
     /// Recipient list is shorter than the configured minimum recipient count.
     TooFewRecipients = 66,
+    /// Issue #786: this matcher already has a pledge on the invoice.
+    MatchPledgeExists = 110,
+    /// Issue #786: no pledge from this matcher exists (or it was already claimed).
+    MatchPledgeNotFound = 111,
+    /// Issue #786: pledge cannot be claimed yet (invoice still open and not fully funded).
+    PledgeNotClaimable = 112,
+    /// Issue #786: pledge amount must be positive.
+    InvalidPledgeAmount = 113,
 }

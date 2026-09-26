@@ -58,6 +58,7 @@ pub mod types;
 mod validation;
 mod calc;
 mod stats;
+mod match_pool_ext;
 
 #[cfg(test)]
 mod test;
@@ -7509,6 +7510,15 @@ impl SplitContract {
         // Capture funded total before and after mutation (used for milestone check below).
         let prev_funded = invoice.funded;
         invoice.funded += credited_amount;
+        // Issue #786: match any pledges against this payment (first-come order),
+        // capped by the amount still needed to fully fund the invoice.
+        let matched_total = match_pool_ext::apply_matches(
+            env,
+            invoice_id,
+            credited_amount,
+            (total - invoice.funded).max(0),
+        );
+        invoice.funded += matched_total;
 
         // Track lifetime contributions separately; never decremented on withdrawal/refund.
         let cumulative_key = cumulative_contributed_key(invoice_id);
@@ -13995,6 +14005,26 @@ impl SplitContract {
 
         events::refund_claimed(&env, invoice_id, &payer, payer_total);
         append_audit_entry(&env, invoice_id, symbol_short!("clm_ref"), &payer);
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #786: Payment matching pool
+    // -----------------------------------------------------------------------
+
+    /// Lock `amount` against `invoice_id` to match upcoming payments. One pledge per matcher.
+    pub fn pledge_match(env: Env, matcher: Address, invoice_id: u64, amount: i128) {
+        match_pool_ext::pledge(&env, &matcher, invoice_id, amount);
+    }
+
+    /// Return the unmatched portion of the caller's pledge once the invoice is closed
+    /// (deadline passed, fully funded, or no longer pending). Returns the refunded amount.
+    pub fn claim_unmatched_pledge(env: Env, matcher: Address, invoice_id: u64) -> i128 {
+        match_pool_ext::claim(&env, &matcher, invoice_id)
+    }
+
+    /// All pledges for an invoice.
+    pub fn get_match_pool(env: Env, invoice_id: u64) -> Vec<match_pool_ext::MatchPledge> {
+        match_pool_ext::get_pool(&env, invoice_id)
     }
 
     // -----------------------------------------------------------------------
