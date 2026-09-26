@@ -8651,3 +8651,109 @@ fn test_create_invoice_payment_window_only_one_or_none_ok() {
     assert!(id3 >= 1);
 }
 
+// ---------------------------------------------------------------------------
+// Issue #788: reward pool info and distribution events
+// ---------------------------------------------------------------------------
+
+/// A 300-unit invoice with a 60-unit reward pool shared by the first `top_n`
+/// payers; `payments` are made by fresh payers. Release is held until 5_000
+/// (`scheduled_release_at`) so every payment is on record when it happens.
+/// Returns (id, payers).
+fn reward_invoice_788(
+    env: &Env,
+    c: &SplitContractClient,
+    token_id: &Address,
+    top_n: u32,
+    payments: &[i128],
+) -> (u64, Vec<Address>) {
+    let sa = StellarAssetClient::new(env, token_id);
+    let creator = Address::generate(env);
+    sa.mint(&creator, &60);
+    env.ledger().set_timestamp(1_000);
+
+    let mut recipients = Vec::new(env);
+    recipients.push_back(Address::generate(env));
+    let mut amounts = Vec::new(env);
+    amounts.push_back(300_i128);
+    let opts = InvoiceOptions {
+        bonus_pool: 60,
+        bonus_max_payers: top_n,
+        scheduled_release_at: Some(5_000),
+        ..default_options(env)
+    };
+    let id = c.create_invoice(&creator, &recipients, &amounts, token_id, &9_999_u64, &opts);
+
+    let mut payers = Vec::new(env);
+    for amount in payments {
+        let payer = Address::generate(env);
+        sa.mint(&payer, amount);
+        c.pay(&payer, &id, amount, &0_u64, &false, &false, &None);
+        payers.push_back(payer);
+    }
+    (id, payers)
+}
+
+fn reward_events_788(env: &Env) -> u32 {
+    env.events()
+        .all()
+        .iter()
+        .filter(|(_c, topics, _d)| topic1_is(env, topics, "rwd_dist"))
+        .count() as u32
+}
+
+#[test]
+fn test_788_reward_pool_not_distributed_before_release() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let (id, payers) = reward_invoice_788(&env, &c, &token_id, 2, &[100]);
+
+    // The latest call is the (non-releasing) `pay`.
+    assert_eq!(reward_events_788(&env), 0);
+    assert_eq!(
+        c.get_reward_pool(&id),
+        RewardPoolInfo {
+            pool_amount: 60,
+            top_n: 2,
+            distributed: false
+        }
+    );
+    assert_eq!(
+        token_client(&env, &token_id).balance(&payers.get(0).unwrap()),
+        0
+    );
+}
+
+#[test]
+fn test_788_reward_pool_distributed_on_release_with_events() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let tk = token_client(&env, &token_id);
+    let (id, payers) = reward_invoice_788(&env, &c, &token_id, 2, &[100, 100, 100]);
+
+    assert!(!c.get_reward_pool(&id).distributed);
+    env.ledger().set_timestamp(5_000);
+    c.trigger_scheduled_release(&id);
+
+    // Events cover only the latest call, i.e. the release.
+    assert_eq!(reward_events_788(&env), 2);
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Released);
+    assert!(c.get_reward_pool(&id).distributed);
+    assert_eq!(tk.balance(&payers.get(0).unwrap()), 30);
+    assert_eq!(tk.balance(&payers.get(1).unwrap()), 30);
+    assert_eq!(tk.balance(&payers.get(2).unwrap()), 0);
+}
+
+#[test]
+fn test_788_fewer_payers_than_top_n_shares_pool_among_all() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let tk = token_client(&env, &token_id);
+    let (id, payers) = reward_invoice_788(&env, &c, &token_id, 5, &[150, 150]);
+    env.ledger().set_timestamp(5_000);
+    c.trigger_scheduled_release(&id);
+
+    assert_eq!(reward_events_788(&env), 2);
+    assert!(c.get_reward_pool(&id).distributed);
+    assert_eq!(tk.balance(&payers.get(0).unwrap()), 30);
+    assert_eq!(tk.balance(&payers.get(1).unwrap()), 30);
+}

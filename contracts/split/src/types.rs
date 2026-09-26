@@ -1873,6 +1873,18 @@ pub struct RecipientShare {
     pub locked: bool,
 }
 
+/// Issue #788: summary of an invoice's reward (bonus) pool.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RewardPoolInfo {
+    /// Amount the creator funded at creation.
+    pub pool_amount: i128,
+    /// Number of payers the pool is shared between.
+    pub top_n: u32,
+    /// Whether the pool has been paid out (on release).
+    pub distributed: bool,
+}
+
 /// Issue #527: A single payment record stored in a contributor's persistent history.
 #[contracttype]
 #[derive(Clone, Debug)]

@@ -95,7 +95,7 @@ use types::{
     InvoiceOptions2, InvoicePayment, InvoiceStats, InvoiceStatus, InvoiceTemplate,
     InvoiceTemplateRecord, LegacyInvoice, OverflowBehavior, OverfundingPolicy, Payment,
     PaymentCertificate, PaymentCommitment, PaymentProof, PaymentRecord, PendingAdminAction,
-    ProtocolFeeConfig, QueuedAction, RebateTier, Recipient, RepScore, ResolveAction,
+    ProtocolFeeConfig, QueuedAction, RebateTier, Recipient, RepScore, ResolveAction, RewardPoolInfo,
     ResolveRule, Role, SimulateReleaseResult, SplitRule, SubscriptionParams, TimelockAction,
     Tombstone, Tranche, TransferRecord, TreasuryRecord, UpgradeProposal,
 };
@@ -3479,6 +3479,19 @@ impl SplitContract {
     // -----------------------------------------------------------------------
 
     /// Return a paginated slice of payment records for the given payer.
+    /// Issue #788: the invoice's reward pool (`bonus_pool`) and whether it has
+    /// been distributed to payers on release.
+    pub fn get_reward_pool(env: Env, invoice_id: u64) -> RewardPoolInfo {
+        let invoice = load_invoice(&env, invoice_id);
+        RewardPoolInfo {
+            pool_amount: invoice.bonus_pool,
+            top_n: invoice.bonus_max_payers,
+            distributed: invoice.bonus_pool > 0
+                && invoice.bonus_max_payers > 0
+                && invoice.status == InvoiceStatus::Released,
+        }
+    }
+
     pub fn get_payer_history(env: Env, payer: Address, offset: u32, limit: u32) -> Vec<PaymentRecord> {
         let hist_key = payer_history_key(&payer);
         let history: Vec<PaymentRecord> = env
@@ -10582,6 +10595,7 @@ impl SplitContract {
                         per_payer
                     };
                     funding_token_client.transfer(&env.current_contract_address(), &payer, &payout);
+                    events::reward_distributed(env, invoice_id, &payer, payout);
                     distributed += payout;
                 }
             }

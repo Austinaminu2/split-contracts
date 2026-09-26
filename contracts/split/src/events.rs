@@ -1918,6 +1918,20 @@ pub fn deadline_extended(env: &Env, invoice_id: u64, old_deadline: u64, new_dead
 // Unit tests for the per-invoice event sequence counter (issue #708)
 // ---------------------------------------------------------------------------
 
+/// Issue #788: a payer received a share of the invoice's reward pool on release.
+/// Topics: (split, rwd_dist, invoice_id)
+/// Data: (recipient, amount)
+pub fn reward_distributed(env: &Env, invoice_id: u64, recipient: &Address, amount: i128) {
+    env.events().publish(
+        (
+            symbol_short!("split"),
+            symbol_short!("rwd_dist"),
+            invoice_id,
+        ),
+        (recipient.clone(), amount),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
