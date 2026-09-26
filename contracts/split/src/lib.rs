@@ -57,10 +57,13 @@ mod events;
 pub mod types;
 mod validation;
 mod calc;
+mod recipients_ext;
 mod stats;
 
 #[cfg(test)]
-mod test;
+pub(crate) mod test;
+#[cfg(test)]
+mod ext_tests;
 
 #[cfg(test)]
 mod fuzz_tests;
@@ -7086,6 +7089,10 @@ impl SplitContract {
         assert!(
             invoice.status == InvoiceStatus::Pending,
             "invoice is not pending"
+        );
+        assert!(
+            recipients_ext::shares_complete(env, invoice_id),
+            "RecipientSharesIncomplete"
         );
         assert!(!invoice.disputed, "invoice is disputed");
         assert!(
