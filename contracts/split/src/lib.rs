@@ -68,6 +68,9 @@ mod fuzz_tests;
 #[cfg(test)]
 mod storage_snapshot;
 
+#[cfg(test)]
+mod op_snapshot;
+
 mod storage;
 mod storage_keys;
 
