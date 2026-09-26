@@ -88,3 +88,29 @@ fn recipients_incomplete_shares_block_payment() {
     StellarAssetClient::new(&env, &token).mint(&payer, &100);
     c.pay(&payer, &id, &100, &1, &false, &false, &None);
 }
+
+#[test]
+fn pause_blocks_manual_resume_and_auto_resume() {
+    let (env, cid, token) = setup_initialized();
+    let c = SplitContractClient::new(&env, &cid);
+    env.ledger().set_timestamp(100);
+    let creator = Address::generate(&env);
+    let (id, _, _) = mk(&env, &c, &token, &creator);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&payer, &300);
+    let reason = soroban_sdk::String::from_str(&env, "maintenance");
+
+    c.pause_invoice(&creator, &id, &reason, &None);
+    assert!(c.is_invoice_paused(&id));
+    assert!(c.try_pay(&payer, &id, &100, &1, &false, &false, &None).is_err());
+    c.resume_invoice(&creator, &id);
+    assert!(!c.is_invoice_paused(&id));
+    c.pay(&payer, &id, &100, &2, &false, &false, &None);
+
+    c.pause_invoice(&creator, &id, &reason, &Some(200));
+    assert!(c.is_invoice_paused(&id));
+    assert!(c.try_pay(&payer, &id, &100, &3, &false, &false, &None).is_err());
+    env.ledger().set_timestamp(200);
+    assert!(!c.is_invoice_paused(&id));
+    c.pay(&payer, &id, &100, &4, &false, &false, &None);
+}
