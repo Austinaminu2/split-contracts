@@ -146,3 +146,51 @@ fn referral_fee_capped() {
     let (id, _, _) = mk(&env, &c, &token, &creator);
     c.set_referral_fee_bps(&creator, &id, &1_001);
 }
+
+fn code(env: &Env) -> soroban_sdk::Bytes {
+    soroban_sdk::Bytes::from_slice(env, b"s3cret")
+}
+
+fn code_hash(env: &Env) -> soroban_sdk::BytesN<32> {
+    env.crypto().sha256(&code(env)).into()
+}
+
+#[test]
+fn visibility_public_pays_freely_and_tier_readable() {
+    let (env, cid, token) = setup_initialized();
+    let c = SplitContractClient::new(&env, &cid);
+    let creator = Address::generate(&env);
+    let (id, _, _) = mk(&env, &c, &token, &creator);
+    assert_eq!(c.get_invoice_visibility(&id), soroban_sdk::symbol_short!("public"));
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&payer, &100);
+    c.pay(&payer, &id, &100, &1, &false, &false, &None);
+}
+
+#[test]
+fn visibility_private_code_checked() {
+    let (env, cid, token) = setup_initialized();
+    let c = SplitContractClient::new(&env, &cid);
+    let creator = Address::generate(&env);
+    let (id, _, _) = mk(&env, &c, &token, &creator);
+    c.set_invoice_visibility(&creator, &id, &InvoiceVisibility::Private(code_hash(&env)));
+    assert_eq!(c.get_invoice_visibility(&id), soroban_sdk::symbol_short!("private"));
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&payer, &200);
+    let wrong = soroban_sdk::Bytes::from_slice(&env, b"nope");
+    assert!(c.try_pay_with_access_code(&payer, &id, &100, &1, &Some(wrong)).is_err());
+    assert!(c.try_pay(&payer, &id, &100, &2, &false, &false, &None).is_err());
+    c.pay_with_access_code(&payer, &id, &100, &3, &Some(code(&env)));
+}
+
+#[test]
+fn visibility_invite_only_without_whitelist_rejected() {
+    let (env, cid, token) = setup_initialized();
+    let c = SplitContractClient::new(&env, &cid);
+    let creator = Address::generate(&env);
+    let (id, _, _) = mk(&env, &c, &token, &creator);
+    c.set_invoice_visibility(&creator, &id, &InvoiceVisibility::InviteOnly);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&payer, &100);
+    assert!(c.try_pay(&payer, &id, &100, &1, &false, &false, &None).is_err());
+}

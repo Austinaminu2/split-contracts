@@ -58,6 +58,7 @@ pub mod types;
 mod validation;
 mod calc;
 mod recipients_ext;
+mod visibility_ext;
 mod referral_ext;
 mod pause_ext;
 mod stats;
@@ -7096,6 +7097,7 @@ impl SplitContract {
             recipients_ext::shares_complete(env, invoice_id),
             "RecipientSharesIncomplete"
         );
+        visibility_ext::check_access(env, invoice_id, payer, &invoice);
         assert!(!invoice.disputed, "invoice is disputed");
         assert!(
             env.ledger().timestamp() <= invoice.deadline,
