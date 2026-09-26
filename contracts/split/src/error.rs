@@ -147,4 +147,20 @@ pub enum ContractError {
     TooFewRecipients = 66,
     /// Issue #776: pagination `limit` exceeds the maximum of 50.
     LimitTooLarge = 80,
+    /// Issue #777: treasury governance config not set.
+    GovNotConfigured = 81,
+    /// Issue #777: proposal does not exist.
+    ProposalNotFound = 82,
+    /// Issue #777: voting period has ended.
+    VotingClosed = 83,
+    /// Issue #777: voting period has not ended.
+    VotingOpen = 84,
+    /// Issue #777: voter already voted on this proposal.
+    AlreadyVoted = 85,
+    /// Issue #777: proposal already executed or rejected.
+    ProposalFinalized = 86,
+    /// Issue #777: allocation list empty or amount not positive.
+    InvalidAllocation = 87,
+    /// Issue #777: voter has zero token balance.
+    NoVotingPower = 88,
 }

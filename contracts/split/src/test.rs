@@ -8707,3 +8707,62 @@ fn test_creator_invoices_limit_too_large() {
     let creator = Address::generate(&env);
     c.get_creator_invoices(&creator, &51, &None);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #777: treasury governance
+// ---------------------------------------------------------------------------
+
+fn gov_setup() -> (Env, Address, Address, Address) {
+    let (env, contract_id, token_id) = setup();
+    let c = client(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    c.initialize(&admin, &0_i128, &treasury, &token_id, &0_u32, &None, &0_u32, &0_u32, &0_u64);
+    c.set_gov_config(&100, &5_000, &1_000);
+    let voter = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&voter, &600);
+    StellarAssetClient::new(&env, &token_id).mint(&contract_id, &500);
+    (env, contract_id, token_id, voter)
+}
+
+fn gov_allocs(env: &Env, to: &Address) -> Vec<treasury_gov_ext::Allocation> {
+    let mut v = Vec::new(env);
+    v.push_back(treasury_gov_ext::Allocation { recipient: to.clone(), amount: 300 });
+    v
+}
+
+#[test]
+fn test_gov_full_lifecycle() {
+    let (env, contract_id, token_id, voter) = gov_setup();
+    let c = client(&env, &contract_id);
+    let dest = Address::generate(&env);
+    let id = c.create_proposal(&voter, &Bytes::new(&env), &gov_allocs(&env, &dest));
+    c.vote_proposal(&id, &voter, &true);
+    env.ledger().set_sequence_number(env.ledger().sequence() + 101);
+    c.execute_proposal(&id);
+    assert_eq!(token_client(&env, &token_id).balance(&dest), 300);
+    assert_eq!(c.get_proposal(&id).status, treasury_gov_ext::ProposalStatus::Executed);
+}
+
+#[test]
+fn test_gov_quorum_not_met_rejected() {
+    let (env, contract_id, token_id, voter) = gov_setup();
+    let c = client(&env, &contract_id);
+    let dest = Address::generate(&env);
+    let id = c.create_proposal(&voter, &Bytes::new(&env), &gov_allocs(&env, &dest));
+    env.ledger().set_sequence_number(env.ledger().sequence() + 101);
+    c.execute_proposal(&id);
+    assert_eq!(token_client(&env, &token_id).balance(&dest), 0);
+    assert_eq!(c.get_proposal(&id).status, treasury_gov_ext::ProposalStatus::Rejected);
+}
+
+#[test]
+#[should_panic]
+fn test_gov_double_vote_rejected() {
+    let (env, contract_id, _t, voter) = gov_setup();
+    let c = client(&env, &contract_id);
+    let dest = Address::generate(&env);
+    let id = c.create_proposal(&voter, &Bytes::new(&env), &gov_allocs(&env, &dest));
+    c.vote_proposal(&id, &voter, &true);
+    c.vote_proposal(&id, &voter, &true);
+}

@@ -59,6 +59,7 @@ mod validation;
 mod calc;
 mod stats;
 mod search_ext;
+mod treasury_gov_ext;
 
 #[cfg(test)]
 mod test;
@@ -15849,6 +15850,39 @@ impl SplitContract {
         cursor: Option<u64>,
     ) -> search_ext::InvoicePage {
         search_ext::get_creator_invoices(&env, creator, limit, cursor)
+    }
+
+    // Issue #777: DAO treasury governance (token-weighted). The DAO treasury is
+    // this contract's balance of the configured USDC token.
+
+    /// Admin: set voting period (ledgers), quorum (bps of `total_supply`) and
+    /// the total token supply used as the quorum denominator.
+    pub fn set_gov_config(env: Env, voting_period_ledgers: u32, quorum_bps: u32, total_supply: i128) {
+        require_admin(&env);
+        treasury_gov_ext::set_config(&env, voting_period_ledgers, quorum_bps, total_supply);
+    }
+
+    pub fn create_proposal(
+        env: Env,
+        proposer: Address,
+        description: Bytes,
+        allocations: Vec<treasury_gov_ext::Allocation>,
+    ) -> u64 {
+        treasury_gov_ext::create_proposal(&env, proposer, description, allocations)
+    }
+
+    pub fn vote_proposal(env: Env, proposal_id: u64, voter: Address, approve: bool) {
+        let token = Self::get_usdc_token(env.clone());
+        treasury_gov_ext::vote(&env, &token, proposal_id, voter, approve);
+    }
+
+    pub fn execute_proposal(env: Env, proposal_id: u64) {
+        let token = Self::get_usdc_token(env.clone());
+        treasury_gov_ext::execute(&env, &token, proposal_id);
+    }
+
+    pub fn get_proposal(env: Env, proposal_id: u64) -> treasury_gov_ext::Proposal {
+        treasury_gov_ext::get_proposal(&env, proposal_id)
     }
 
     pub fn get_invoice_funding_percentage(env: Env, invoice_id: u64) -> u32 {
