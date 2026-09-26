@@ -114,3 +114,35 @@ fn pause_blocks_manual_resume_and_auto_resume() {
     assert!(!c.is_invoice_paused(&id));
     c.pay(&payer, &id, &100, &4, &false, &false, &None);
 }
+
+#[test]
+fn referral_credits_and_claims() {
+    let (env, cid, token) = setup_initialized();
+    let c = SplitContractClient::new(&env, &cid);
+    let creator = Address::generate(&env);
+    let (id, _, _) = mk(&env, &c, &token, &creator);
+    let payer = Address::generate(&env);
+    let referrer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&payer, &1_000);
+    c.set_referral_fee_bps(&creator, &id, &1_000);
+
+    c.pay_with_referrer(&payer, &id, &500, &1, &Some(referrer.clone()));
+    assert_eq!(c.get_referral_balance(&referrer), 50);
+    assert_eq!(c.claim_referral_rewards(&referrer), 50);
+    assert_eq!(c.get_referral_balance(&referrer), 0);
+    assert_eq!(soroban_sdk::token::Client::new(&env, &token).balance(&referrer), 50);
+
+    // No referrer, no fee.
+    c.pay_with_referrer(&payer, &id, &100, &2, &None);
+    assert_eq!(c.get_referral_balance(&referrer), 0);
+}
+
+#[test]
+#[should_panic(expected = "referral_fee_bps exceeds 1000")]
+fn referral_fee_capped() {
+    let (env, cid, token) = setup_initialized();
+    let c = SplitContractClient::new(&env, &cid);
+    let creator = Address::generate(&env);
+    let (id, _, _) = mk(&env, &c, &token, &creator);
+    c.set_referral_fee_bps(&creator, &id, &1_001);
+}

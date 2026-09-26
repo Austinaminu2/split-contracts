@@ -58,6 +58,7 @@ pub mod types;
 mod validation;
 mod calc;
 mod recipients_ext;
+mod referral_ext;
 mod pause_ext;
 mod stats;
 
