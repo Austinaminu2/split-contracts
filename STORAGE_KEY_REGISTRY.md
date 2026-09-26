@@ -154,6 +154,13 @@ Keys with two or three fields for efficient multi-dimensional lookups.
 | `TemplateVersion(creator, name, version)` | `(Symbol, Address, Symbol, u32)` | #210 | InvoiceTemplate | Versioned template for (creator, name, version) |
 | `TemplateVersionCount(creator, name)` | `(Symbol, Address, Symbol)` | #210 | u32 | Template version counter for (creator, name) |
 
+### Module-owned keys: `schedule_ext::ScheduleKey` (persistent, #780)
+
+| Key | Value | Description |
+|-----|-------|-------------|
+| `Schedule(invoice_id)` | `Vec<Option<u64>>` | Per-recipient `release_at`, aligned with `invoice.recipients` |
+| `Paid(invoice_id)` | `Vec<bool>` | Per-recipient paid flag for scheduled release |
+
 ## Migration Guide
 
 When renaming a storage key between contract versions, use the migration helpers in `storage_keys.rs`:

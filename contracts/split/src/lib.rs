@@ -58,6 +58,7 @@ pub mod types;
 mod validation;
 mod calc;
 mod stats;
+mod schedule_ext;
 
 #[cfg(test)]
 mod test;
@@ -8290,6 +8291,21 @@ impl SplitContract {
         Self::_release(&env, invoice_id, &mut invoice, &caller);
     }
 
+    /// Issue #780: attach a per-recipient `release_at` schedule (creator only).
+    pub fn set_recipient_schedule(env: Env, creator: Address, invoice_id: u64, release_ats: Vec<Option<u64>>) {
+        schedule_ext::set_schedule(&env, &creator, invoice_id, release_ats);
+    }
+
+    /// Issue #780: pay all scheduled recipients whose `release_at` has passed.
+    pub fn release_scheduled(env: Env, invoice_id: u64) {
+        schedule_ext::release_scheduled(&env, invoice_id);
+    }
+
+    /// Issue #780: recipients not yet paid under the schedule.
+    pub fn get_pending_recipients(env: Env, invoice_id: u64) -> Vec<Address> {
+        schedule_ext::pending_recipients(&env, invoice_id)
+    }
+
     /// Backwards-compatible release entry point.
     pub fn release(env: Env, invoice_id: u64) {
         let caller = env.current_contract_address();
@@ -8442,6 +8458,10 @@ impl SplitContract {
     }
 
     fn _release(env: &Env, invoice_id: u64, invoice: &mut Invoice, actor: &Address) {
+        // Issue #780: scheduled invoices are released via `release_scheduled`.
+        if schedule_ext::has_schedule(env, invoice_id) {
+            return;
+        }
         // Block release when invoice is under active dispute.
         if invoice.status == InvoiceStatus::Disputed {
             panic!("{}", ContractError::InvoiceDisputed as u32);

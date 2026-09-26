@@ -145,4 +145,8 @@ pub enum ContractError {
     AlreadyPaid = 65,
     /// Recipient list is shorter than the configured minimum recipient count.
     TooFewRecipients = 66,
+    /// Issue #780: schedule length mismatch, or invoice not pending/unfunded.
+    ScheduleInvalid = 120,
+    /// Issue #780: no recipient schedule is set for this invoice.
+    NoScheduleSet = 121,
 }

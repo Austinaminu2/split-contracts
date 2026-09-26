@@ -8651,3 +8651,52 @@ fn test_create_invoice_payment_window_only_one_or_none_ok() {
     assert!(id3 >= 1);
 }
 
+
+// ---------------------------------------------------------------------------
+// Issue #780: recipient payment schedule
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_recipient_schedule_partial_then_remaining() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let tk = token_client(&env, &token_id);
+    let creator = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let r1 = Address::generate(&env);
+    let r2 = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &500);
+    env.ledger().set_timestamp(1_000);
+
+    let mut recipients = Vec::new(&env);
+    recipients.push_back(r1.clone());
+    recipients.push_back(r2.clone());
+    let mut amounts = Vec::new(&env);
+    amounts.push_back(100_i128);
+    amounts.push_back(100_i128);
+    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999_u64, &default_options(&env));
+    let mut sched: Vec<Option<u64>> = Vec::new(&env);
+    sched.push_back(None);
+    sched.push_back(Some(2_000_u64));
+    c.set_recipient_schedule(&creator, &id, &sched);
+
+    c.pay(&payer, &id, &200_i128, &0_u64, &false, &false, &None);
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Pending);
+    assert_eq!(c.get_pending_recipients(&id).len(), 2);
+
+    c.release_scheduled(&id);
+    assert_eq!(tk.balance(&r1), 100);
+    assert_eq!(tk.balance(&r2), 0);
+    assert_eq!(c.get_pending_recipients(&id).len(), 1);
+
+    // Second call before r2 is due must not double-pay r1.
+    c.release_scheduled(&id);
+    assert_eq!(tk.balance(&r1), 100);
+
+    env.ledger().set_timestamp(2_000);
+    c.release_scheduled(&id);
+    assert_eq!(tk.balance(&r2), 100);
+    assert_eq!(tk.balance(&r1), 100);
+    assert_eq!(c.get_pending_recipients(&id).len(), 0);
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Released);
+}
