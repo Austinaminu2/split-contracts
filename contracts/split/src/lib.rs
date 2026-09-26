@@ -72,6 +72,9 @@ mod storage;
 mod storage_keys;
 
 mod migrations;
+mod hold_ext;
+#[cfg(test)]
+mod ext_test_util;
 
 use error::ContractError;
 use validation::assert_valid_bps;
@@ -6918,7 +6921,10 @@ impl SplitContract {
                 .storage()
                 .persistent()
                 .has(&invoice_group_key(invoice_id));
+            // Issue #772: timestamp-based escrow hold forces a manual release() call.
+            let seconds_hold_active = hold_ext::on_fully_funded(env, invoice_id);
             let guarded = invoice.prerequisite_id.is_some()
+                || seconds_hold_active
                 || !invoice.tranches.is_empty()
                 || !invoice.release_stages.is_empty()
                 || in_group
@@ -8166,6 +8172,8 @@ impl SplitContract {
                 panic!("EscrowHoldActive");
             }
         }
+        // Issue #772: timestamp-based escrow hold.
+        hold_ext::enforce_release(&env, invoice_id);
         // Issue #325: block release while a payer dispute is active.
         if invoice.disputed {
             if let Some(record) = env

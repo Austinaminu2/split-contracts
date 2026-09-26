@@ -192,3 +192,12 @@ Run tests with:
 ```sh
 cargo test --lib storage_keys
 ```
+
+## Feature-module key enums (`*_ext.rs`)
+
+These modules own their `#[contracttype]` key enum so they consume no variant of the 50-variant-limited `StorageKey`/`InvoiceKey`.
+
+| Module | Enum::Variant | Tier | Purpose |
+|--------|---------------|------|---------|
+| `hold_ext.rs` (#772) | `HoldKey::Secs(u64)` | persistent | Per-invoice escrow hold length in seconds |
+| `hold_ext.rs` (#772) | `HoldKey::FundedAt(u64)` | persistent | Timestamp the invoice first became fully funded |
