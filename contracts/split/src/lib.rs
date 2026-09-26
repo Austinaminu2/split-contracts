@@ -1401,6 +1401,25 @@ fn anonymous_recipients_key(invoice_id: u64) -> (Symbol, u64) {
     (symbol_short!("anon_rec"), invoice_id)
 }
 
+/// Issue #808: payer anonymity flag for an invoice — persistent storage.
+fn payer_anonymity_key(invoice_id: u64) -> (Symbol, u64) {
+    (symbol_short!("anon_pay"), invoice_id)
+}
+
+/// Issue #808: whether payment events for this invoice carry a payer hash
+/// instead of the payer address.
+fn payer_anonymity_enabled(env: &Env, invoice_id: u64) -> bool {
+    env.storage()
+        .persistent()
+        .get(&payer_anonymity_key(invoice_id))
+        .unwrap_or(false)
+}
+
+/// Issue #808: sha256 of the payer address's XDR encoding.
+fn hash_payer(env: &Env, payer: &Address) -> BytesN<32> {
+    env.crypto().sha256(&payer.clone().to_xdr(env)).into()
+}
+
 /// Issue #438: recipient commitment hash — persistent storage (invoice_id, index).
 // Issue #438: storage key for the recipient reveal scheme; the reveal entry
 // point that consumes it is not wired up yet.
@@ -15163,6 +15182,33 @@ impl SplitContract {
             .persistent()
             .get(&anonymous_recipients_key(invoice_id))
             .unwrap_or(false)
+    }
+
+    /// Issue #808: hide payer addresses in this invoice's payment events,
+    /// which then carry `sha256(payer XDR)` instead. Creator-only, while Pending.
+    pub fn set_payer_anonymity(env: Env, creator: Address, invoice_id: u64, enabled: bool) {
+        require_not_paused(&env);
+        creator.require_auth();
+        let invoice = load_invoice(&env, invoice_id);
+        assert!(invoice.creator == creator, "only creator");
+        assert!(
+            invoice.status == InvoiceStatus::Pending,
+            "invoice is not pending"
+        );
+        env.storage()
+            .persistent()
+            .set(&payer_anonymity_key(invoice_id), &enabled);
+    }
+
+    /// Issue #808: whether payer anonymity is enabled for this invoice.
+    pub fn is_payer_anonymous(env: Env, invoice_id: u64) -> bool {
+        payer_anonymity_enabled(&env, invoice_id)
+    }
+
+    /// Issue #808: the hash a payer appears as in anonymous payment events,
+    /// so they can find their own payments.
+    pub fn get_payer_hash(env: Env, payer: Address) -> BytesN<32> {
+        hash_payer(&env, &payer)
     }
 
     // -----------------------------------------------------------------------

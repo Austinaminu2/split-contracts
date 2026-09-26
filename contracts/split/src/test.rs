@@ -8812,3 +8812,95 @@ fn test_807_refund_returns_every_payment_with_100_payers() {
     }
     assert_eq!(tk.balance(&contract_id), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #808: payer anonymity
+// ---------------------------------------------------------------------------
+
+/// Payer field (first data element) of the `paid` event from the last call.
+fn paid_event_payer_808(env: &Env) -> Val {
+    env.events()
+        .all()
+        .iter()
+        .find_map(|(_c, topics, data)| {
+            if topic1_is(env, &topics, "paid") {
+                let fields: Vec<Val> = Vec::try_from_val(env, &data).unwrap();
+                fields.get(0)
+            } else {
+                None
+            }
+        })
+        .expect("paid event emitted")
+}
+
+#[test]
+fn test_808_anonymous_payment_event_carries_payer_hash() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &100);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(
+        &env,
+        &c,
+        &creator,
+        &Address::generate(&env),
+        300,
+        &token_id,
+        9_999,
+    );
+    c.set_payer_anonymity(&creator, &id, &true);
+    assert!(c.is_payer_anonymous(&id));
+
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+
+    let emitted = paid_event_payer_808(&env);
+    let hash = BytesN::<32>::try_from_val(&env, &emitted).expect("payer field is a hash");
+    assert_eq!(hash, c.get_payer_hash(&payer));
+    assert!(Address::try_from_val(&env, &emitted).is_err());
+}
+
+#[test]
+fn test_808_payment_event_keeps_address_when_not_anonymous() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &100);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(
+        &env,
+        &c,
+        &Address::generate(&env),
+        &Address::generate(&env),
+        300,
+        &token_id,
+        9_999,
+    );
+    assert!(!c.is_payer_anonymous(&id));
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+
+    let emitted = paid_event_payer_808(&env);
+    assert_eq!(Address::try_from_val(&env, &emitted).unwrap(), payer);
+}
+
+#[test]
+#[should_panic(expected = "only creator")]
+fn test_808_only_creator_can_enable_payer_anonymity() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(
+        &env,
+        &c,
+        &Address::generate(&env),
+        &Address::generate(&env),
+        300,
+        &token_id,
+        9_999,
+    );
+    c.set_payer_anonymity(&Address::generate(&env), &id, &true);
+}
