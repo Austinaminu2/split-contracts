@@ -60,6 +60,7 @@ mod calc;
 pub mod attest_ext;
 pub mod delegate_ext;
 pub mod ttl_ext;
+pub mod tiers_ext;
 mod stats;
 
 #[cfg(test)]
@@ -5123,6 +5124,7 @@ impl SplitContract {
         // invoice once `_create_invoice_inner` has allocated its id.
         let cosigners = options.cosigners.clone();
         let cosigner_threshold = options.cosigner_threshold;
+        let tiers = options.ext.tiers.clone();
 
         // Validate split ratios (if provided) before any storage is touched.
         if !options.ratios.is_empty() {
@@ -5202,6 +5204,7 @@ impl SplitContract {
 
         apply_overfunding_policy(&env, id, overfunding_policy);
         apply_cosigner_config(&env, id, cosigners, cosigner_threshold);
+        tiers_ext::apply_tiers(&env, id, tiers);
         id
     }
 
@@ -5264,6 +5267,7 @@ impl SplitContract {
         // See `create_invoice` — captured before `options` is consumed.
         let cosigners = options.cosigners.clone();
         let cosigner_threshold = options.cosigner_threshold;
+        let tiers = options.ext.tiers.clone();
 
         let id = Self::_create_invoice_inner(
             &env,
@@ -5335,6 +5339,7 @@ impl SplitContract {
 
         apply_overfunding_policy(&env, id, overfunding_policy);
         apply_cosigner_config(&env, id, cosigners, cosigner_threshold);
+        tiers_ext::apply_tiers(&env, id, tiers);
         id
     }
 
@@ -7565,6 +7570,7 @@ impl SplitContract {
             );
         }
         check_and_emit_funding_checkpoints(env, invoice_id, invoice.funded, total);
+        tiers_ext::check_tiers(env, invoice_id, invoice.funded, total);
         update_creator_stats_on_payment(env, &invoice.creator, credited_amount);
         update_creator_payers(env, &invoice.creator, payer);
         notify_invoice(

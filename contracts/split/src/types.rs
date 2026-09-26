@@ -546,6 +546,19 @@ pub struct InvoiceOptions2 {
     pub early_bird_fee_credit: i128,
     /// Issue #518: denominator for high-precision ratio splits.
     pub ratio_denominator: u64,
+    /// Issue #771: optional funding tiers (max 4, strictly increasing
+    /// `threshold_bps`). A `TierUnlocked` event fires when a tier is crossed.
+    pub tiers: Option<Vec<FundingTier>>,
+}
+
+/// Issue #771: a funding-goal tier with an on-chain reward description.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FundingTier {
+    /// Funding level in basis points of the goal (1..=10_000) that unlocks the tier.
+    pub threshold_bps: u32,
+    /// Reward description (max 64 bytes).
+    pub reward_description: Bytes,
 }
 
 impl Default for InvoiceOptions2 {
@@ -589,6 +602,7 @@ impl Default for InvoiceOptions2 {
             creator_fee_bps: 0,
             early_bird_fee_credit: 0,
             ratio_denominator: 10_000,
+            tiers: None,
         }
     }
 }

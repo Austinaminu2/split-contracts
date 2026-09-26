@@ -157,4 +157,7 @@ pub enum ContractError {
     DelegateLimitReached = 71,
     /// Issue #770: Invoice is in a terminal status and its TTL cannot be bumped.
     InvoiceTerminated = 72,
+    /// Issue #771: Funding tiers are invalid (more than 4, thresholds not
+    /// strictly increasing within 1..=10_000, or reward description over 64 bytes).
+    InvalidFundingTiers = 73,
 }
