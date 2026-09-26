@@ -8833,3 +8833,97 @@ fn test_stream_zero_ledger_settle() {
     assert_eq!(c.get_invoice(&id).funded, 0);
     assert!(c.get_stream(&sid).active);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #783: payment validator
+// ---------------------------------------------------------------------------
+
+#[soroban_sdk::contract]
+pub struct MockApproveValidator;
+
+#[soroban_sdk::contractimpl]
+impl MockApproveValidator {
+    pub fn validate_payment(_env: Env, _invoice_id: u64, _payer: Address, _amount: i128) -> bool {
+        true
+    }
+}
+
+/// Approves the first call, rejects every later one.
+#[soroban_sdk::contract]
+pub struct MockRejectSecondValidator;
+
+#[soroban_sdk::contractimpl]
+impl MockRejectSecondValidator {
+    pub fn validate_payment(env: Env, _invoice_id: u64, _payer: Address, _amount: i128) -> bool {
+        let n: u32 = env.storage().instance().get(&0u32).unwrap_or(0);
+        env.storage().instance().set(&0u32, &(n + 1));
+        n == 0
+    }
+}
+
+#[soroban_sdk::contract]
+pub struct MockPanicValidator;
+
+#[soroban_sdk::contractimpl]
+impl MockPanicValidator {
+    pub fn validate_payment(_env: Env, _invoice_id: u64, _payer: Address, _amount: i128) -> bool {
+        panic!("boom")
+    }
+}
+
+fn validator_setup(validator: &Address, env: &Env, contract_id: &Address, token_id: &Address) -> (u64, Address, Address) {
+    let c = client(env, contract_id);
+    let creator = Address::generate(env);
+    let recipient = Address::generate(env);
+    let payer = Address::generate(env);
+    StellarAssetClient::new(env, token_id).mint(&payer, &1_000);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(env, &c, &creator, &recipient, 100, token_id, 9_999);
+    c.set_invoice_validator(&creator, &id, &Some(validator.clone()));
+    (id, creator, payer)
+}
+
+#[test]
+fn test_validator_approves_and_reject_second_call() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let v = env.register(MockRejectSecondValidator, ());
+    let (id, _creator, payer) = validator_setup(&v, &env, &contract_id, &token_id);
+    assert!(c.try_pay(&payer, &id, &40_i128, &0_u64, &false, &false, &None).is_ok());
+    assert!(c.try_pay(&payer, &id, &40_i128, &1_u64, &false, &false, &None).is_err());
+    assert_eq!(c.get_invoice(&id).funded, 40);
+}
+
+#[test]
+fn test_validator_always_approve() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let v = env.register(MockApproveValidator, ());
+    let (id, _creator, payer) = validator_setup(&v, &env, &contract_id, &token_id);
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Released);
+}
+
+#[test]
+fn test_validator_panic_is_wrapped() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let v = env.register(MockPanicValidator, ());
+    let (id, _creator, payer) = validator_setup(&v, &env, &contract_id, &token_id);
+    let r = c.try_pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    assert_eq!(r.err().unwrap().unwrap(), ContractError::ValidatorCallFailed);
+}
+
+#[test]
+fn test_no_validator_no_call() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &100);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 9_999);
+    assert!(c.get_invoice_validator(&id).is_none());
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+}

@@ -59,6 +59,7 @@ mod validation;
 mod calc;
 mod stats;
 mod schedule_ext;
+mod validator_ext;
 mod stream_ext;
 mod compliance_ext;
 
@@ -7188,6 +7189,9 @@ impl SplitContract {
         };
         let remaining = total - invoice.funded;
 
+        // Issue #783: custom validator contract, if attached to this invoice.
+        validator_ext::validate(env, invoice_id, payer, amount);
+
         // Issue #781: admin-set KYC registry (`is_approved`) takes precedence; the
         // legacy `is_verified` contract is only used when no registry is set.
         if invoice.require_kyc && !compliance_ext::check_kyc(env, payer) {
@@ -8325,6 +8329,16 @@ impl SplitContract {
     /// Issue #782: read a stream.
     pub fn get_stream(env: Env, stream_id: u64) -> stream_ext::Stream {
         stream_ext::get_stream(&env, stream_id)
+    }
+
+    /// Issue #783: attach (or clear with `None`) a payment validator contract (creator only).
+    pub fn set_invoice_validator(env: Env, creator: Address, invoice_id: u64, validator: Option<Address>) {
+        validator_ext::set_validator(&env, &creator, invoice_id, validator);
+    }
+
+    /// Issue #783: validator attached to an invoice, if any.
+    pub fn get_invoice_validator(env: Env, invoice_id: u64) -> Option<Address> {
+        validator_ext::get_validator(&env, invoice_id)
     }
 
     /// Issue #780: attach a per-recipient `release_at` schedule (creator only).

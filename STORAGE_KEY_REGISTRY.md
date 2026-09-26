@@ -174,6 +174,13 @@ Keys with two or three fields for efficient multi-dimensional lookups.
 | `Stream(stream_id)` | persistent | `Stream` | Streaming payment state |
 | `Counter` | instance | `u64` | Last issued stream id |
 
+### Module-owned keys: `validator_ext::ValidatorKey` (#783)
+
+| Key | Tier | Value | Description |
+|-----|------|-------|-------------|
+| `Validator(invoice_id)` | persistent | `Address` | Validator contract for an invoice |
+| `Busy` | temporary | `bool` | Re-entrancy lock during the validator call |
+
 ## Migration Guide
 
 When renaming a storage key between contract versions, use the migration helpers in `storage_keys.rs`:

@@ -155,4 +155,8 @@ pub enum ContractError {
     StreamNotFound = 125,
     /// Issue #782: stream has been cancelled.
     StreamNotActive = 126,
+    /// Issue #783: the invoice's validator contract returned `false`.
+    PaymentRejectedByValidator = 123,
+    /// Issue #783: the validator contract call failed (panic/trap/bad return).
+    ValidatorCallFailed = 124,
 }
