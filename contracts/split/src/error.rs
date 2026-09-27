@@ -154,4 +154,11 @@ pub enum ContractError {
     BatchTooLarge = 69,
     /// Issue #745: The invoice has already been expired and all payers refunded.
     InvoiceExpired = 70,
+    /// Issue #822: Payment priority level is outside the valid range (0–2).
+    InvalidPriority = 71,
+    /// Issue #825: The pending payment has not yet reached the required
+    /// number of confirmation ledgers.
+    ConfirmationPending = 72,
+    /// Issue #825: No pending payment exists for this payer and invoice.
+    NoPendingPayment = 73,
 }

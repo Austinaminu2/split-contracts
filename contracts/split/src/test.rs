@@ -9119,3 +9119,120 @@ fn test_contribution_cap_no_cap_set_no_restriction() {
     assert_eq!(c.get_payer_contribution_total(&id, &payer), 1000);
 }
 
+
+// ---------------------------------------------------------------------------
+// Issues #821, #822, #823, #825
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_categorize_invoice_by_amount_and_recipient() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let r1 = Address::generate(&env);
+    let r2 = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+
+    let small = make_invoice(&env, &c, &creator, &r1, 500, &token_id, 9_999);
+    let medium = make_invoice(&env, &c, &creator, &r1, 5_000, &token_id, 9_999);
+    let large = make_invoice(&env, &c, &creator, &r1, 200_000, &token_id, 9_999);
+    assert_eq!(c.get_invoice_category(&small), None);
+    assert_eq!(c.categorize_invoice(&small), symbol_short!("small"));
+    assert_eq!(c.categorize_invoice(&medium), symbol_short!("medium"));
+    assert_eq!(c.categorize_invoice(&large), symbol_short!("large"));
+    assert_eq!(c.get_invoice_category(&large), Some(symbol_short!("large")));
+
+    c.set_category_thresholds(&100, &1_000);
+    assert_eq!(c.categorize_invoice(&medium), symbol_short!("large"));
+
+    c.set_recipient_category(&r2, &symbol_short!("payroll"));
+    let tagged = make_invoice(&env, &c, &creator, &r2, 500, &token_id, 9_999);
+    assert_eq!(c.categorize_invoice(&tagged), symbol_short!("payroll"));
+}
+
+#[test]
+fn test_payment_priority_ordering() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let r = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+
+    let a = make_invoice(&env, &c, &creator, &r, 100, &token_id, 9_999);
+    let b = make_invoice(&env, &c, &creator, &r, 100, &token_id, 9_999);
+    let d = make_invoice(&env, &c, &creator, &r, 100, &token_id, 9_999);
+    assert_eq!(c.get_payment_priority(&a), 1);
+    c.set_payment_priority(&a, &0);
+    c.set_payment_priority(&d, &2);
+
+    let mut ids = Vec::new(&env);
+    ids.push_back(a);
+    ids.push_back(b);
+    ids.push_back(d);
+    let sorted = c.sort_by_priority(&ids);
+    assert_eq!(sorted, Vec::from_array(&env, [d, b, a]));
+}
+
+#[test]
+fn test_payment_priority_invalid_level() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let r = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &creator, &r, 100, &token_id, 9_999);
+    let res = c.try_set_payment_priority(&id, &3);
+    assert_eq!(res, Err(Ok(soroban_sdk::Error::from_contract_error(ContractError::InvalidPriority as u32))));
+}
+
+#[test]
+fn test_archive_events_moves_old_entries() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let r = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &creator, &r, 200, &token_id, 9_999);
+    c.add_co_creator(&creator, &id, &Address::generate(&env));
+    env.ledger().set_timestamp(2_000);
+    c.add_co_creator(&creator, &id, &Address::generate(&env));
+
+    let before = c.get_audit_log(&id).len();
+    let archived = c.archive_events(&id, &1_500);
+    assert!(archived >= 1);
+    assert_eq!(c.get_archived_events(&id).len(), archived);
+    assert_eq!(c.get_audit_log(&id).len() + archived, before);
+    assert!(c.get_audit_log(&id).iter().all(|e| e.timestamp >= 1_500));
+    assert_eq!(c.archive_events(&id, &1_500), 0);
+}
+
+#[test]
+fn test_payment_confirmation_delay() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let r = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &500);
+    env.ledger().set_timestamp(1_000);
+    env.ledger().set_sequence_number(100);
+    let id = make_invoice(&env, &c, &creator, &r, 200, &token_id, 9_999);
+
+    assert_eq!(
+        c.try_confirm_payment(&payer, &id),
+        Err(Ok(soroban_sdk::Error::from_contract_error(ContractError::NoPendingPayment as u32)))
+    );
+    c.set_confirmation_blocks(&5);
+    assert_eq!(c.queue_payment(&payer, &id, &50, &0), 105);
+    assert_eq!(c.get_pending_payment(&payer, &id), Some((50, 0, 105)));
+    assert_eq!(
+        c.try_confirm_payment(&payer, &id),
+        Err(Ok(soroban_sdk::Error::from_contract_error(ContractError::ConfirmationPending as u32)))
+    );
+    assert_eq!(c.get_invoice(&id).funded, 0);
+
+    env.ledger().set_sequence_number(105);
+    c.confirm_payment(&payer, &id);
+    assert_eq!(c.get_invoice(&id).funded, 50);
+    assert_eq!(c.get_pending_payment(&payer, &id), None);
+}

@@ -27,7 +27,7 @@
 
 use crate::storage_keys::ev_seq_key;
 use crate::types::{DisputeOutcome, FeeSplit, InvoicePhase, InvoiceStatus, OverfundingPolicy, RepScore, TimelockAction};
-use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, String, Symbol, Vec};
 
 // ---------------------------------------------------------------------------
 // Event sequence helper (per-invoice, temporary-storage counter)
@@ -2035,4 +2035,75 @@ mod tests {
             assert_eq!(next_seq(&env, 20), 2);
         });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #821: Smart invoice categorization
+// ---------------------------------------------------------------------------
+
+/// Emitted when an invoice is auto-categorized.
+///
+/// Topics: (split, inv_cat, invoice_id)
+/// Data:   category
+pub fn invoice_categorized(env: &Env, invoice_id: u64, category: &Symbol) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("inv_cat"), invoice_id),
+        category.clone(),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #822: Payment priority levels
+// ---------------------------------------------------------------------------
+
+/// Emitted when an invoice's payment priority level is changed.
+///
+/// Topics: (split, pay_prio, invoice_id)
+/// Data:   (old_level, new_level)
+pub fn payment_priority_set(env: &Env, invoice_id: u64, old_level: u32, new_level: u32) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("pay_prio"), invoice_id),
+        (old_level, new_level),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #823: Contract event archival
+// ---------------------------------------------------------------------------
+
+/// Emitted when audit events older than a cutoff are moved to cold storage.
+///
+/// Topics: (split, evt_arch, invoice_id)
+/// Data:   (archived_count, before_timestamp)
+pub fn events_archived(env: &Env, invoice_id: u64, archived_count: u32, before: u64) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("evt_arch"), invoice_id),
+        (archived_count, before),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #825: Payment confirmation delays
+// ---------------------------------------------------------------------------
+
+/// Emitted when a payment is queued awaiting confirmation.
+///
+/// Topics: (split, pay_queue, invoice_id)
+/// Data:   (payer, amount, confirm_at_ledger)
+pub fn payment_queued(env: &Env, invoice_id: u64, payer: &Address, amount: i128, confirm_at: u32) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("pay_queue"), invoice_id),
+        (payer.clone(), amount, confirm_at),
+    );
+}
+
+/// Emitted when a queued payment is confirmed and credited.
+///
+/// Topics: (split, pay_conf, invoice_id)
+/// Data:   (payer, amount)
+pub fn payment_confirmed(env: &Env, invoice_id: u64, payer: &Address, amount: i128) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("pay_conf"), invoice_id),
+        (payer.clone(), amount),
+    );
 }
