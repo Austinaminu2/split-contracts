@@ -31,6 +31,7 @@ desktop.ini
 # Test snapshots and generated test artefacts
 # ============================================================
 **/__snapshots__/
+**/test_snapshots/
 *.snap
 *.snap.orig
 *.snapshot
