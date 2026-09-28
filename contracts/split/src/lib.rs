@@ -78,6 +78,9 @@ mod fuzz_tests;
 #[cfg(test)]
 mod storage_snapshot;
 
+#[cfg(test)]
+mod op_snapshot;
+
 mod storage;
 mod storage_keys;
 
@@ -6403,6 +6406,8 @@ impl SplitContract {
                 .checked_add(1)
                 .expect("total_invoices overflow"),
         );
+        // Issue #787: global analytics aggregate.
+        analytics_ext::on_created(env, &creator);
 
         id
     }
@@ -8529,6 +8534,8 @@ impl SplitContract {
 
         append_audit_entry(env, invoice_id, symbol_short!("pay"), payer);
         events::payment_received(env, invoice_id, payer, credited_amount, &funding_token_for(&invoice));
+        // Issue #787: global analytics aggregate.
+        analytics_ext::on_paid(env, payer, credited_amount);
         // Issue #333: emit milestone events for any thresholds crossed by this payment.
         {
             let total_for_milestone: i128 = total; // already computed above
@@ -14922,6 +14929,22 @@ impl SplitContract {
             .unwrap_or(0u64)
     }
 
+    /// Issue #787: protocol-wide aggregate stats (invoices, paid/released/refunded
+    /// amounts, unique creators and payers).
+    pub fn get_protocol_stats(env: Env) -> analytics_ext::ProtocolStats {
+        let released: i128 = env
+            .storage()
+            .persistent()
+            .get(&total_released_key())
+            .unwrap_or(0i128);
+        let refunded: i128 = env
+            .storage()
+            .persistent()
+            .get(&total_refunded_key())
+            .unwrap_or(0i128);
+        analytics_ext::get(&env, released, refunded)
+    }
+
     /// Return the contract-level analytics counters (issue #28).
     ///
     /// Returns a tuple of (total_invoices, total_volume, total_released, total_refunded).
@@ -15879,19 +15902,45 @@ impl SplitContract {
     }
 
     // -----------------------------------------------------------------------
+    // Issue #786: Payment matching pool
+    // -----------------------------------------------------------------------
+
+    /// Lock `amount` against `invoice_id` to match upcoming payments. One pledge per matcher.
+    pub fn pledge_match(env: Env, matcher: Address, invoice_id: u64, amount: i128) {
+        match_pool_ext::pledge(&env, &matcher, invoice_id, amount);
+    }
+
+    /// Return the unmatched portion of the caller's pledge once the invoice is closed
+    /// (deadline passed, fully funded, or no longer pending). Returns the refunded amount.
+    pub fn claim_unmatched_pledge(env: Env, matcher: Address, invoice_id: u64) -> i128 {
+        match_pool_ext::claim(&env, &matcher, invoice_id)
+    }
+
+    /// All pledges for an invoice.
+    pub fn get_match_pool(env: Env, invoice_id: u64) -> Vec<match_pool_ext::MatchPledge> {
+        match_pool_ext::get_pool(&env, invoice_id)
+    }
+
+    // -----------------------------------------------------------------------
     // Issue #310: Two-step upgrade with 48-hour timelock
     // -----------------------------------------------------------------------
 
     /// Propose a contract upgrade. Only the admin may call this.
     ///
     /// Stores a pending proposal with an eligible_at = now + 48 h.
-    /// Overwrites any existing proposal (only one active at a time).
+    /// Panics with "upgrade already pending" if a proposal exists (cancel it first).
     pub fn propose_upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
         require_admin(&env);
         let _ = admin;
 
-        const FORTY_EIGHT_HOURS: u64 = 48 * 60 * 60;
-        let eligible_at = env.ledger().timestamp().saturating_add(FORTY_EIGHT_HOURS);
+        assert!(
+            !env.storage().instance().has(&upgrade_proposal_key()),
+            "upgrade already pending"
+        );
+        let eligible_at = env
+            .ledger()
+            .timestamp()
+            .saturating_add(constants::UPGRADE_TIMELOCK_SECONDS);
 
         let proposal = UpgradeProposal {
             new_wasm_hash: new_wasm_hash.clone(),
@@ -15906,8 +15955,10 @@ impl SplitContract {
 
     /// Execute a pending upgrade once the 48-hour timelock has elapsed.
     ///
-    /// Callable by anyone after the timelock expires. Clears the proposal on success.
-    pub fn execute_upgrade(env: Env) {
+    /// Admin-only (issue #785). Clears the proposal on success.
+    pub fn execute_upgrade(env: Env, admin: Address) {
+        require_admin(&env);
+        let _ = admin;
         let proposal: UpgradeProposal = env
             .storage()
             .instance()
@@ -15937,6 +15988,11 @@ impl SplitContract {
         env.storage().instance().remove(&upgrade_proposal_key());
 
         events::upgrade_cancelled(&env, &admin_addr);
+    }
+
+    /// Return the pending upgrade proposal, or None (issue #785 name).
+    pub fn get_pending_upgrade(env: Env) -> Option<UpgradeProposal> {
+        env.storage().instance().get(&upgrade_proposal_key())
     }
 
     /// Return the pending upgrade proposal, or None if none is active.

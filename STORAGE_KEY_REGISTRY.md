@@ -154,6 +154,15 @@ Keys with two or three fields for efficient multi-dimensional lookups.
 | `TemplateVersion(creator, name, version)` | `(Symbol, Address, Symbol, u32)` | #210 | InvoiceTemplate | Versioned template for (creator, name, version) |
 | `TemplateVersionCount(creator, name)` | `(Symbol, Address, Symbol)` | #210 | u32 | Template version counter for (creator, name) |
 
+## Extension modules (own key enums)
+
+| Enum | Variant | Tier | Issue | Value | Purpose |
+|------|---------|------|-------|-------|---------|
+| `MatchKey` (`match_pool_ext.rs`) | `Pool(u64)` | persistent | #786 | Vec<MatchPledge> | Matching pledges per invoice |
+| `AnalyticsKey` (`analytics_ext.rs`) | `Stats` | instance | #787 | StoredStats | Invoice count, paid total, unique creator/payer counts |
+| `AnalyticsKey` (`analytics_ext.rs`) | `Creator(Address)` | persistent | #787 | bool | Creator already counted |
+| `AnalyticsKey` (`analytics_ext.rs`) | `Payer(Address)` | persistent | #787 | bool | Payer already counted |
+
 ## Migration Guide
 
 When renaming a storage key between contract versions, use the migration helpers in `storage_keys.rs`:
