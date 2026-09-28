@@ -546,12 +546,11 @@ pub struct InvoiceOptions2 {
     pub early_bird_fee_credit: i128,
     /// Issue #518: denominator for high-precision ratio splits.
     pub ratio_denominator: u64,
-    /// Issue #754: Optional tags for invoice search/filtering (max 5, each max 32 chars).
-    pub tags: Option<Vec<String>>,
-    /// Issue #755: Duration in seconds to extend deadline when quorum is reached (default: 7 days = 604800).
-    pub extension_duration_seconds: u64,
-    /// Issue #755: Quorum in basis points (e.g. 5100 = 51%) for deadline extension votes.
-    pub extension_quorum_bps: u32,
+    /// Issue #747: maximum total contribution allowed from any single payer.
+    /// When set, `_pay` panics with `ContributionCapExceeded` if adding the
+    /// new payment would push the payer's running total past this cap.
+    /// `None` (the default) means no per-payer cap is enforced.
+    pub max_contribution_per_payer: Option<i128>,
 }
 
 impl Default for InvoiceOptions2 {
@@ -595,9 +594,7 @@ impl Default for InvoiceOptions2 {
             creator_fee_bps: 0,
             early_bird_fee_credit: 0,
             ratio_denominator: 10_000,
-            tags: None,
-            extension_duration_seconds: 604_800,
-            extension_quorum_bps: 5_100,
+            max_contribution_per_payer: None,
         }
     }
 }
@@ -868,6 +865,9 @@ pub struct InvoiceExt2 {
     pub ratio_denominator: u64,
     /// Issue #518: per-recipient split ratios (parallel to recipients vec).
     pub ratios: Vec<u32>,
+    /// Issue #747: maximum total contribution allowed from any single payer.
+    /// `None` means no per-payer cap is enforced.
+    pub max_contribution_per_payer: Option<i128>,
 }
 
 impl InvoiceExt2 {
@@ -914,6 +914,7 @@ impl InvoiceExt2 {
             creator_fee_bps: 0,
             ratio_denominator: 10_000,
             ratios: Vec::new(env),
+            max_contribution_per_payer: None,
         }
     }
 }
@@ -1116,6 +1117,9 @@ pub struct Invoice {
     pub ratio_denominator: u64,
     /// Issue #518: per-recipient split ratios evaluated at release time.
     pub ratios: Vec<u32>,
+    /// Issue #747: maximum total contribution allowed from any single payer.
+    /// `None` means no per-payer cap is enforced.
+    pub max_contribution_per_payer: Option<i128>,
 }
 
 impl Invoice {
@@ -1227,6 +1231,7 @@ impl Invoice {
                 creator_fee_bps: self.creator_fee_bps,
                 ratio_denominator: self.ratio_denominator,
                 ratios: self.ratios.clone(),
+                max_contribution_per_payer: self.max_contribution_per_payer,
             },
         )
     }
@@ -1334,6 +1339,7 @@ impl Invoice {
             creator_fee_bps: ext2.creator_fee_bps,
             ratio_denominator: ext2.ratio_denominator,
             ratios: ext2.ratios,
+            max_contribution_per_payer: ext2.max_contribution_per_payer,
         }
     }
 }

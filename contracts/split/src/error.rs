@@ -145,10 +145,13 @@ pub enum ContractError {
     AlreadyPaid = 65,
     /// Recipient list is shorter than the configured minimum recipient count.
     TooFewRecipients = 66,
-    /// Issue #753: Payer sent the wrong payment token.
-    WrongPaymentToken = 67,
-    /// Issue #754: Tag is invalid (not lowercase alphanumeric + hyphens, or too long).
-    InvalidTag = 68,
-    /// Issue #755: Invoice has reached the maximum number of deadline extensions (3).
-    ExtensionLimitReached = 69,
+    /// Issue #747: Payment would push a payer's running total past the per-payer
+    /// contribution cap (`max_contribution_per_payer`) set on the invoice.
+    ContributionCapExceeded = 67,
+    /// Issue #746: Basis points value is out of the valid range (1–10 000).
+    InvalidBps = 68,
+    /// Issue #744: Batch size exceeds the hard cap of 20 invoices per call.
+    BatchTooLarge = 69,
+    /// Issue #745: The invoice has already been expired and all payers refunded.
+    InvoiceExpired = 70,
 }

@@ -8652,485 +8652,470 @@ fn test_create_invoice_payment_window_only_one_or_none_ok() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #752: NFT mint on full funding
-// ---------------------------------------------------------------------------
-
-#[contract]
-struct MockProofNft;
-
-#[contractimpl]
-impl MockProofNft {
-    pub fn set_should_fail(env: Env, fail: bool) {
-        env.storage().persistent().set(&symbol_short!("fail"), &fail);
-    }
-
-    pub fn mint(env: Env, to: Address, invoice_id: u64) {
-        let should_fail: bool = env.storage().persistent().get(&symbol_short!("fail")).unwrap_or(false);
-        if should_fail {
-            panic!("intentional mint failure");
-        }
-        let count: u32 = env.storage().persistent().get(&symbol_short!("m_cnt")).unwrap_or(0);
-        env.storage().persistent().set(&symbol_short!("m_cnt"), &(count + 1));
-        env.storage().persistent().set(&(symbol_short!("m_to"), invoice_id), &to);
-    }
-
-    pub fn mint_count(env: Env) -> u32 {
-        env.storage().persistent().get(&symbol_short!("m_cnt")).unwrap_or(0)
-    }
-
-    pub fn minted_to(env: Env, invoice_id: u64) -> Option<Address> {
-        env.storage().persistent().get(&(symbol_short!("m_to"), invoice_id))
-    }
-}
-
-#[test]
-fn test_752_nft_mint_on_release_success() {
-    let (env, contract_id, token_id) = setup();
-    let c = client(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    c.initialize(&admin, &0_i128, &treasury, &token_id, &0_u32, &None, &0_u32, &0_u32, &0_u64);
-
-    let nft_id = env.register(MockProofNft, ());
-    let nft = MockProofNftClient::new(&env, &nft_id);
-
-    c.set_nft_contract(&admin, &nft_id);
-    assert_eq!(c.get_nft_contract(), Some(nft_id.clone()));
-
-    let creator = Address::generate(&env);
-    let payer = Address::generate(&env);
-    let recipient = Address::generate(&env);
-
-    StellarAssetClient::new(&env, &token_id).mint(&payer, &200);
-    env.ledger().set_timestamp(1_000);
-
-    let mut recipients = Vec::new(&env);
-    recipients.push_back(recipient.clone());
-    let mut amounts = Vec::new(&env);
-    amounts.push_back(200_i128);
-
-    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999_u64, &default_options(&env));
-    c.pay(&payer, &id, &200_i128, &0_u64, &false, &false, &None);
-
-    let has_nft_mint_event = env.events().all().iter().any(|(_c, topics, _d)| topic1_is(&env, &topics, "nft_mint"));
-    assert!(has_nft_mint_event, "nft_mint event should be emitted");
-
-    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Released);
-    assert_eq!(nft.mint_count(), 1);
-    assert_eq!(nft.minted_to(&id), Some(creator));
-}
-
-#[test]
-fn test_752_nft_mint_failure_does_not_revert_release() {
-    let (env, contract_id, token_id) = setup();
-    let c = client(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    c.initialize(&admin, &0_i128, &treasury, &token_id, &0_u32, &None, &0_u32, &0_u32, &0_u64);
-
-    let nft_id = env.register(MockProofNft, ());
-    let nft = MockProofNftClient::new(&env, &nft_id);
-    nft.set_should_fail(&true);
-
-    c.set_nft_contract(&admin, &nft_id);
-
-    let creator = Address::generate(&env);
-    let payer = Address::generate(&env);
-    let recipient = Address::generate(&env);
-
-    StellarAssetClient::new(&env, &token_id).mint(&payer, &200);
-    env.ledger().set_timestamp(1_000);
-
-    let mut recipients = Vec::new(&env);
-    recipients.push_back(recipient.clone());
-    let mut amounts = Vec::new(&env);
-    amounts.push_back(200_i128);
-
-    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999_u64, &default_options(&env));
-    c.pay(&payer, &id, &200_i128, &0_u64, &false, &false, &None);
-
-    let has_nft_fail_event = env.events().all().iter().any(|(_c, topics, _d)| topic1_is(&env, &topics, "nft_fail"));
-    assert!(has_nft_fail_event, "nft_fail event should be emitted");
-
-    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Released);
-    assert_eq!(token_client(&env, &token_id).balance(&recipient), 200);
-}
-
-#[test]
-#[should_panic(expected = "NotAuthorized")]
-fn test_752_set_nft_contract_non_admin_fails() {
-    let (env, contract_id, token_id) = setup();
-    let c = client(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    c.initialize(&admin, &0_i128, &treasury, &token_id, &0_u32, &None, &0_u32, &0_u32, &0_u64);
-
-    let stranger = Address::generate(&env);
-    let nft_id = env.register(MockProofNft, ());
-    c.set_nft_contract(&stranger, &nft_id);
-}
-
-// ---------------------------------------------------------------------------
-// Issue #753: Multi-currency payment token
+// Issue #744: batch_create_invoices (up to 20 invoices)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_753_multi_currency_invoice_creation_and_payment() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(SplitContract, ());
-    let token_admin = Address::generate(&env);
-    let default_token = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
-    let custom_token = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
-
-    let c = client(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    c.initialize(&admin, &0_i128, &treasury, &default_token, &0_u32, &None, &0_u32, &0_u32, &0_u64);
-
-    let creator = Address::generate(&env);
-    let payer = Address::generate(&env);
-    let recipient = Address::generate(&env);
-
-    StellarAssetClient::new(&env, &custom_token).mint(&payer, &300);
-    env.ledger().set_timestamp(1_000);
-
-    let mut opts = default_options(&env);
-    opts.ext.payment_token = Some(custom_token.clone());
-
-    let mut recipients = Vec::new(&env);
-    recipients.push_back(recipient.clone());
-    let mut amounts = Vec::new(&env);
-    amounts.push_back(300_i128);
-
-    let id = c.create_invoice(&creator, &recipients, &amounts, &default_token, &9_999_u64, &opts);
-
-    let has_pmtk_event = env.events().all().iter().any(|(_c, topics, _d)| topic1_is(&env, &topics, "pmtk_set"));
-    assert!(has_pmtk_event, "pmtk_set event should be emitted");
-
-    let invoice = c.get_invoice(&id);
-    assert_eq!(invoice.funding_token, custom_token);
-
-    c.pay(&payer, &id, &300_i128, &0_u64, &false, &false, &None);
-    assert_eq!(c.get_invoice(&id).funded, 300);
-    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Released);
-    assert_eq!(TokenClient::new(&env, &custom_token).balance(&recipient), 300);
-}
-
-#[test]
-#[should_panic(expected = "WrongPaymentToken")]
-fn test_753_pay_with_wrong_token_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(SplitContract, ());
-    let token_admin = Address::generate(&env);
-    let token_a = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
-    let token_b = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
-
-    let c = client(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    c.initialize(&admin, &0_i128, &treasury, &token_a, &0_u32, &None, &0_u32, &0_u32, &0_u64);
-
-    let creator = Address::generate(&env);
-    let payer = Address::generate(&env);
-    let recipient = Address::generate(&env);
-
-    StellarAssetClient::new(&env, &token_b).mint(&payer, &100);
-    env.ledger().set_timestamp(1_000);
-
-    let mut recipients = Vec::new(&env);
-    recipients.push_back(recipient.clone());
-    let mut amounts = Vec::new(&env);
-    amounts.push_back(100_i128);
-
-    // Invoice expects token_a.
-    let id = c.create_invoice(&creator, &recipients, &amounts, &token_a, &9_999_u64, &default_options(&env));
-
-    // Payer pays with token_b -> panics with WrongPaymentToken.
-    c.pay_with_token(&payer, &id, &token_b, &100_i128, &0);
-}
-
-// ---------------------------------------------------------------------------
-// Issue #754: Tag-based invoice search index
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_754_create_with_tags_and_filter() {
+fn test_batch_create_invoices_valid_batch_1() {
     let (env, contract_id, token_id) = setup_initialized();
     let c = client(&env, &contract_id);
     let creator = Address::generate(&env);
     let recipient = Address::generate(&env);
 
     let mut recipients = Vec::new(&env);
-    recipients.push_back(recipient.clone());
+    recipients.push_back(recipient);
     let mut amounts = Vec::new(&env);
     amounts.push_back(100_i128);
 
-    let mut tags1 = Vec::new(&env);
-    tags1.push_back(String::from_str(&env, "defi"));
-    tags1.push_back(String::from_str(&env, "payment"));
-
-    let mut opts1 = default_options(&env);
-    opts1.ext.tags = Some(tags1);
-    let id1 = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999_u64, &opts1);
-
-    let mut tags2 = Vec::new(&env);
-    tags2.push_back(String::from_str(&env, "payment"));
-    tags2.push_back(String::from_str(&env, "stellar"));
-
-    let mut opts2 = default_options(&env);
-    opts2.ext.tags = Some(tags2);
-    let id2 = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999_u64, &opts2);
-
-    let payment_invoices = c.get_invoices_by_tag(&String::from_str(&env, "payment"), &10, &0);
-    assert_eq!(payment_invoices.len(), 2);
-    assert_eq!(payment_invoices.get(0).unwrap(), id1);
-    assert_eq!(payment_invoices.get(1).unwrap(), id2);
-
-    let defi_invoices = c.get_invoices_by_tag(&String::from_str(&env, "defi"), &10, &0);
-    assert_eq!(defi_invoices.len(), 1);
-    assert_eq!(defi_invoices.get(0).unwrap(), id1);
-
-    let stellar_invoices = c.get_invoices_by_tag(&String::from_str(&env, "stellar"), &10, &0);
-    assert_eq!(stellar_invoices.len(), 1);
-    assert_eq!(stellar_invoices.get(0).unwrap(), id2);
-
-    let t1 = c.get_invoice_tags(&id1);
-    assert_eq!(t1.len(), 2);
-}
-
-#[test]
-fn test_754_pagination_by_tag() {
-    let (env, contract_id, token_id) = setup_initialized();
-    let c = client(&env, &contract_id);
-    let creator = Address::generate(&env);
-    let recipient = Address::generate(&env);
-
-    let mut recipients = Vec::new(&env);
-    recipients.push_back(recipient.clone());
-    let mut amounts = Vec::new(&env);
-    amounts.push_back(100_i128);
-
-    let make_opts = |t: &str| {
-        let mut tags = Vec::new(&env);
-        tags.push_back(String::from_str(&env, t));
-        let mut opts = default_options(&env);
-        opts.ext.tags = Some(tags);
-        opts
+    let params = types::CreateInvoiceParams {
+        recipients,
+        amounts,
+        token: token_id.clone(),
+        deadline: 9_999,
     };
 
-    let id1 = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999_u64, &make_opts("infra"));
-    let id2 = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999_u64, &make_opts("infra"));
-    let id3 = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999_u64, &make_opts("infra"));
+    let mut invoices = Vec::new(&env);
+    invoices.push_back(params);
 
-    let tag = String::from_str(&env, "infra");
-    let page1 = c.get_invoices_by_tag(&tag, &2, &0);
-    assert_eq!(page1.len(), 2);
-    assert_eq!(page1.get(0).unwrap(), id1);
-    assert_eq!(page1.get(1).unwrap(), id2);
+    let ids = c.batch_create_invoices(&creator, &invoices);
+    assert_eq!(ids.len(), 1);
+    assert_eq!(ids.get(0).unwrap(), 1);
 
-    let page2 = c.get_invoices_by_tag(&tag, &2, &id2);
-    assert_eq!(page2.len(), 1);
-    assert_eq!(page2.get(0).unwrap(), id3);
-
-    let page3 = c.get_invoices_by_tag(&tag, &2, &id3);
-    assert_eq!(page3.len(), 0);
+    let invoice = c.get_invoice(&ids.get(0).unwrap());
+    assert_eq!(invoice.creator, creator);
 }
 
 #[test]
-fn test_754_add_and_remove_tag() {
+fn test_batch_create_invoices_valid_batch_20() {
     let (env, contract_id, token_id) = setup_initialized();
     let c = client(&env, &contract_id);
     let creator = Address::generate(&env);
     let recipient = Address::generate(&env);
 
     let mut recipients = Vec::new(&env);
-    recipients.push_back(recipient.clone());
+    recipients.push_back(recipient);
     let mut amounts = Vec::new(&env);
-    amounts.push_back(100_i128);
+    amounts.push_back(50_i128);
 
-    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999_u64, &default_options(&env));
-    let tag = String::from_str(&env, "soroban-rocks");
+    let params = types::CreateInvoiceParams {
+        recipients,
+        amounts,
+        token: token_id.clone(),
+        deadline: 9_999,
+    };
 
-    c.add_tag(&id, &creator, &tag);
+    let mut invoices = Vec::new(&env);
+    for _ in 0..20 {
+        invoices.push_back(params.clone());
+    }
 
-    let found = c.get_invoices_by_tag(&tag, &10, &0);
-    assert_eq!(found.len(), 1);
-    assert_eq!(found.get(0).unwrap(), id);
-
-    c.remove_tag(&id, &creator, &tag);
-
-    let found_after = c.get_invoices_by_tag(&tag, &10, &0);
-    assert_eq!(found_after.len(), 0);
-}
-
-#[test]
-#[should_panic]
-fn test_754_invalid_tag_uppercase_rejected() {
-    let (env, contract_id, token_id) = setup_initialized();
-    let c = client(&env, &contract_id);
-    let creator = Address::generate(&env);
-    let recipient = Address::generate(&env);
-
-    let mut recipients = Vec::new(&env);
-    recipients.push_back(recipient.clone());
-    let mut amounts = Vec::new(&env);
-    amounts.push_back(100_i128);
-
-    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999_u64, &default_options(&env));
-    c.add_tag(&id, &creator, &String::from_str(&env, "InvalidTag"));
+    let ids = c.batch_create_invoices(&creator, &invoices);
+    assert_eq!(ids.len(), 20);
+    for i in 0..20 {
+        assert_eq!(ids.get(i).unwrap(), (i + 1) as u64);
+    }
 }
 
 #[test]
 #[should_panic]
-fn test_754_invalid_tag_too_long_rejected() {
+fn test_batch_create_invoices_batch_of_21_panics() {
     let (env, contract_id, token_id) = setup_initialized();
     let c = client(&env, &contract_id);
     let creator = Address::generate(&env);
     let recipient = Address::generate(&env);
 
     let mut recipients = Vec::new(&env);
-    recipients.push_back(recipient.clone());
+    recipients.push_back(recipient);
     let mut amounts = Vec::new(&env);
-    amounts.push_back(100_i128);
+    amounts.push_back(50_i128);
 
-    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999_u64, &default_options(&env));
-    c.add_tag(&id, &creator, &String::from_str(&env, "this-tag-is-way-longer-than-thirty-two-chars-maximum"));
-}
+    let params = types::CreateInvoiceParams {
+        recipients,
+        amounts,
+        token: token_id.clone(),
+        deadline: 9_999,
+    };
 
-// ---------------------------------------------------------------------------
-// Issue #755: Automated deadline extension with payer vote
-// ---------------------------------------------------------------------------
+    let mut invoices = Vec::new(&env);
+    for _ in 0..21 {
+        invoices.push_back(params.clone());
+    }
 
-#[test]
-fn test_755_deadline_extended_when_quorum_reached() {
-    let (env, contract_id, token_id) = setup_initialized();
-    let c = client(&env, &contract_id);
-    let creator = Address::generate(&env);
-    let payer1 = Address::generate(&env);
-    let payer2 = Address::generate(&env);
-    let recipient = Address::generate(&env);
-
-    StellarAssetClient::new(&env, &token_id).mint(&payer1, &100);
-    StellarAssetClient::new(&env, &token_id).mint(&payer2, &100);
-
-    let mut recipients = Vec::new(&env);
-    recipients.push_back(recipient.clone());
-    let mut amounts = Vec::new(&env);
-    amounts.push_back(200_i128);
-
-    let deadline = 10_000_u64;
-    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &deadline, &default_options(&env));
-
-    c.pay(&payer1, &id, &50_i128, &0_u64, &false, &false, &None);
-    c.pay(&payer2, &id, &50_i128, &0_u64, &false, &false, &None);
-
-    // 2 unique payers. Default quorum is 51% (5100 bps).
-    // Payer 1 votes: 1/2 = 50% < 51% -> quorum not yet met.
-    c.vote_extend_deadline(&id, &payer1);
-    assert_eq!(c.get_invoice(&id).deadline, deadline);
-    assert_eq!(c.get_invoice_extension_count(&id), 0);
-
-    // Payer 2 votes: 2/2 = 100% >= 51% -> quorum met!
-    c.vote_extend_deadline(&id, &payer2);
-    let new_deadline = deadline + 604_800;
-    assert_eq!(c.get_invoice(&id).deadline, new_deadline);
-    assert_eq!(c.get_invoice_extension_count(&id), 1);
+    c.batch_create_invoices(&creator, &invoices);
 }
 
 #[test]
-fn test_755_custom_extension_config() {
+#[should_panic]
+fn test_batch_create_invoices_empty_batch_panics() {
+    let (env, contract_id, _token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let invoices = Vec::new(&env);
+
+    c.batch_create_invoices(&creator, &invoices);
+}
+
+#[test]
+#[should_panic]
+fn test_batch_create_invoices_atomic_rollback_on_invalid() {
     let (env, contract_id, token_id) = setup_initialized();
     let c = client(&env, &contract_id);
     let creator = Address::generate(&env);
-    let payer1 = Address::generate(&env);
-    let payer2 = Address::generate(&env);
-    let payer3 = Address::generate(&env);
     let recipient = Address::generate(&env);
 
-    StellarAssetClient::new(&env, &token_id).mint(&payer1, &100);
-    StellarAssetClient::new(&env, &token_id).mint(&payer2, &100);
-    StellarAssetClient::new(&env, &token_id).mint(&payer3, &100);
-
     let mut recipients = Vec::new(&env);
-    recipients.push_back(recipient.clone());
+    recipients.push_back(recipient);
     let mut amounts = Vec::new(&env);
-    amounts.push_back(300_i128);
+    amounts.push_back(50_i128);
+
+    let valid_params = types::CreateInvoiceParams {
+        recipients: recipients.clone(),
+        amounts: amounts.clone(),
+        token: token_id.clone(),
+        deadline: 9_999,
+    };
+
+    // Invalid deadline in the past
+    let invalid_params = types::CreateInvoiceParams {
+        recipients,
+        amounts,
+        token: token_id.clone(),
+        deadline: 0,
+    };
+
+    let mut invoices = Vec::new(&env);
+    invoices.push_back(valid_params);
+    invoices.push_back(invalid_params);
+
+    c.batch_create_invoices(&creator, &invoices);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #745: trigger_expiry auto-refund
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_trigger_expiry_expired_invoice_refunds_payers() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let tk = token_client(&env, &token_id);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer1 = Address::generate(&env);
+    let payer2 = Address::generate(&env);
+
+    StellarAssetClient::new(&env, &token_id).mint(&payer1, &1000);
+    StellarAssetClient::new(&env, &token_id).mint(&payer2, &1000);
+
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &creator, &recipient, 1000, &token_id, 2_000);
+
+    c.pay(&payer1, &id, &300_i128, &0_u64, &false, &false, &None);
+    c.pay(&payer2, &id, &400_i128, &0_u64, &false, &false, &None);
+
+    assert_eq!(tk.balance(&payer1), 700);
+    assert_eq!(tk.balance(&payer2), 600);
+
+    // Fast-forward past deadline
+    env.ledger().set_timestamp(2_001);
+
+    // Anyone triggers expiry
+    c.trigger_expiry(&id);
+
+    // Verify refund
+    assert_eq!(tk.balance(&payer1), 1000);
+    assert_eq!(tk.balance(&payer2), 1000);
+
+    let invoice = c.get_invoice(&id);
+    assert_eq!(invoice.status, types::InvoiceStatus::Expired);
+}
+
+#[test]
+#[should_panic]
+fn test_trigger_expiry_non_expired_panics() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &creator, &recipient, 1000, &token_id, 2_000);
+
+    // Timestamp 1000 <= deadline 2000
+    c.trigger_expiry(&id);
+}
+
+#[test]
+fn test_trigger_expiry_double_trigger_is_noop() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let tk = token_client(&env, &token_id);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1000);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &creator, &recipient, 1000, &token_id, 2_000);
+    c.pay(&payer, &id, &500_i128, &0_u64, &false, &false, &None);
+
+    env.ledger().set_timestamp(2_001);
+    c.trigger_expiry(&id);
+    assert_eq!(tk.balance(&payer), 1000);
+
+    // Second trigger should be idempotent no-op
+    c.trigger_expiry(&id);
+    assert_eq!(tk.balance(&payer), 1000);
+}
+
+#[test]
+#[should_panic]
+fn test_trigger_expiry_pay_rejects_expired() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1000);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &creator, &recipient, 1000, &token_id, 2_000);
+    c.pay(&payer, &id, &500_i128, &0_u64, &false, &false, &None);
+
+    env.ledger().set_timestamp(2_001);
+    c.trigger_expiry(&id);
+
+    // Attempting to pay on expired invoice must panic
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+}
+
+#[test]
+#[should_panic]
+fn test_trigger_expiry_release_rejects_expired() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1000);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &creator, &recipient, 1000, &token_id, 2_000);
+    c.pay(&payer, &id, &500_i128, &0_u64, &false, &false, &None);
+
+    env.ledger().set_timestamp(2_001);
+    c.trigger_expiry(&id);
+
+    // Attempting to release expired invoice must panic
+    c.release_invoice(&creator, &id, &None);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #746: release_partial
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_release_partial_single_and_two_summing_to_100() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let tk = token_client(&env, &token_id);
+
+    let creator = Address::generate(&env);
+    let rec0 = Address::generate(&env);
+    let rec1 = Address::generate(&env);
+    let mut recipients = Vec::new(&env);
+    recipients.push_back(rec0.clone());
+    recipients.push_back(rec1.clone());
+    let mut amounts = Vec::new(&env);
+    amounts.push_back(1200_i128);
+    amounts.push_back(800_i128);
+    let payer = Address::generate(&env);
+
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1000);
+    env.ledger().set_timestamp(1_000);
+
+    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999, &default_options(&env));
+    // Pay 1000 out of 2000 total so invoice remains Pending with 1000 funded
+    c.pay(&payer, &id, &1000_i128, &0_u64, &false, &false, &None);
+
+    // First partial release: 4000 bps (40% of 1000 = 400)
+    c.release_partial(&id, &creator, &4000_u32);
+
+    // 400 * 1200 / 2000 = 240, 400 * 800 / 2000 = 160
+    assert_eq!(tk.balance(&rec0), 240);
+    assert_eq!(tk.balance(&rec1), 160);
+
+    let inv1 = c.get_invoice(&id);
+    assert_eq!(inv1.status, types::InvoiceStatus::PartiallyReleased);
+    assert_eq!(inv1.released_bps, 4000);
+
+    // Second partial release: 6000 bps (60% of 1000 = 600), summing to 10 000 bps (100%)
+    c.release_partial(&id, &creator, &6000_u32);
+
+    assert_eq!(tk.balance(&rec0), 600);
+    assert_eq!(tk.balance(&rec1), 400);
+
+    let inv2 = c.get_invoice(&id);
+    assert_eq!(inv2.status, types::InvoiceStatus::Released);
+    assert_eq!(inv2.released_bps, 10000);
+}
+
+#[test]
+#[should_panic]
+fn test_release_partial_exceed_100_panics() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let (recipients, amounts) = two_recipients(&env);
+    let payer = Address::generate(&env);
+
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1000);
+    env.ledger().set_timestamp(1_000);
+
+    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999, &default_options(&env));
+    // Pay partial (500 out of 1000) so invoice remains Pending
+    c.pay(&payer, &id, &500_i128, &0_u64, &false, &false, &None);
+
+    c.release_partial(&id, &creator, &6000_u32);
+    // 6000 + 5000 = 11000 > 10000 -> panics
+    c.release_partial(&id, &creator, &5000_u32);
+}
+
+#[test]
+#[should_panic]
+fn test_release_partial_zero_bps_panics() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let (recipients, amounts) = two_recipients(&env);
+    let payer = Address::generate(&env);
+
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1000);
+    env.ledger().set_timestamp(1_000);
+
+    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999, &default_options(&env));
+    c.pay(&payer, &id, &500_i128, &0_u64, &false, &false, &None);
+
+    c.release_partial(&id, &creator, &0_u32);
+}
+
+#[test]
+#[should_panic]
+fn test_release_partial_over_10000_bps_panics() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let (recipients, amounts) = two_recipients(&env);
+    let payer = Address::generate(&env);
+
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1000);
+    env.ledger().set_timestamp(1_000);
+
+    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999, &default_options(&env));
+    c.pay(&payer, &id, &500_i128, &0_u64, &false, &false, &None);
+
+    c.release_partial(&id, &creator, &10_001_u32);
+}
+
+#[test]
+#[should_panic]
+fn test_release_partial_non_creator_panics() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let non_creator = Address::generate(&env);
+    let (recipients, amounts) = two_recipients(&env);
+    let payer = Address::generate(&env);
+
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1000);
+    env.ledger().set_timestamp(1_000);
+
+    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999, &default_options(&env));
+    c.pay(&payer, &id, &1000_i128, &0_u64, &false, &false, &None);
+
+    c.release_partial(&id, &non_creator, &5000_u32);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #747: max_contribution_per_payer
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_contribution_cap_within_cap_and_exact_cap() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
+
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1000);
+    env.ledger().set_timestamp(1_000);
 
     let mut opts = default_options(&env);
-    // Custom: 1 day extension (86400s), 33% quorum (3300 bps)
-    opts.ext.extension_duration_seconds = 86_400;
-    opts.ext.extension_quorum_bps = 3_300;
+    opts.ext.max_contribution_per_payer = Some(500);
 
-    let deadline = 10_000_u64;
-    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &deadline, &opts);
+    let mut recipients = Vec::new(&env);
+    recipients.push_back(recipient);
+    let mut amounts = Vec::new(&env);
+    amounts.push_back(1000);
 
-    c.pay(&payer1, &id, &50_i128, &0_u64, &false, &false, &None);
-    c.pay(&payer2, &id, &50_i128, &0_u64, &false, &false, &None);
-    c.pay(&payer3, &id, &50_i128, &0_u64, &false, &false, &None);
+    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999, &opts);
 
-    // 3 unique payers. Quorum is 33%. 1/3 = 33.3% >= 33%.
-    // Payer 1 votes -> quorum met immediately!
-    c.vote_extend_deadline(&id, &payer1);
-    assert_eq!(c.get_invoice(&id).deadline, deadline + 86_400);
-    assert_eq!(c.get_invoice_extension_count(&id), 1);
+    // First payment: 300 <= 500 cap -> succeeds
+    c.pay(&payer, &id, &300_i128, &0_u64, &false, &false, &None);
+    assert_eq!(c.get_payer_contribution_total(&id, &payer), 300);
+
+    // Second payment: 200 -> total 500 == 500 cap -> succeeds exactly
+    c.pay(&payer, &id, &200_i128, &1_u64, &false, &false, &None);
+    assert_eq!(c.get_payer_contribution_total(&id, &payer), 500);
 }
 
 #[test]
 #[should_panic]
-fn test_755_max_three_extensions_enforced() {
+fn test_contribution_cap_exceeded_panics() {
     let (env, contract_id, token_id) = setup_initialized();
     let c = client(&env, &contract_id);
     let creator = Address::generate(&env);
-    let payer = Address::generate(&env);
     let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
 
-    StellarAssetClient::new(&env, &token_id).mint(&payer, &100);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1000);
+    env.ledger().set_timestamp(1_000);
+
+    let mut opts = default_options(&env);
+    opts.ext.max_contribution_per_payer = Some(500);
 
     let mut recipients = Vec::new(&env);
-    recipients.push_back(recipient.clone());
+    recipients.push_back(recipient);
     let mut amounts = Vec::new(&env);
-    amounts.push_back(100_i128);
+    amounts.push_back(1000);
 
-    let deadline = 10_000_u64;
-    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &deadline, &default_options(&env));
-    c.pay(&payer, &id, &10_i128, &0_u64, &false, &false, &None);
+    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999, &opts);
 
-    // 1 payer = 100% of payers. Each vote extends immediately.
-    // Extension 1
-    c.vote_extend_deadline(&id, &payer);
-    assert_eq!(c.get_invoice_extension_count(&id), 1);
+    // First payment 300
+    c.pay(&payer, &id, &300_i128, &0_u64, &false, &false, &None);
 
-    // Extension 2
-    c.vote_extend_deadline(&id, &payer);
-    assert_eq!(c.get_invoice_extension_count(&id), 2);
-
-    // Extension 3
-    c.vote_extend_deadline(&id, &payer);
-    assert_eq!(c.get_invoice_extension_count(&id), 3);
-
-    // Extension 4 -> must panic with ExtensionLimitReached
-    c.vote_extend_deadline(&id, &payer);
+    // Second payment 201 -> 300 + 201 = 501 > 500 -> panics ContributionCapExceeded
+    c.pay(&payer, &id, &201_i128, &1_u64, &false, &false, &None);
 }
 
 #[test]
-#[should_panic(expected = "only payers can vote")]
-fn test_755_non_payer_cannot_vote() {
+fn test_contribution_cap_no_cap_set_no_restriction() {
     let (env, contract_id, token_id) = setup_initialized();
     let c = client(&env, &contract_id);
     let creator = Address::generate(&env);
-    let stranger = Address::generate(&env);
     let recipient = Address::generate(&env);
+    let payer = Address::generate(&env);
 
-    let mut recipients = Vec::new(&env);
-    recipients.push_back(recipient.clone());
-    let mut amounts = Vec::new(&env);
-    amounts.push_back(100_i128);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1000);
+    env.ledger().set_timestamp(1_000);
 
-    let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &10_000_u64, &default_options(&env));
-    c.vote_extend_deadline(&id, &stranger);
+    let id = make_invoice(&env, &c, &creator, &recipient, 1000, &token_id, 9_999);
+
+    // Full 1000 paid by single payer with no cap set
+    c.pay(&payer, &id, &1000_i128, &0_u64, &false, &false, &None);
+    assert_eq!(c.get_payer_contribution_total(&id, &payer), 1000);
 }
 
