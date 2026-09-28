@@ -99,7 +99,7 @@ use types::{
     InvoiceOptions2, InvoicePayment, InvoiceStats, InvoiceStatus, InvoiceTemplate,
     InvoiceTemplateRecord, LegacyInvoice, OverflowBehavior, OverfundingPolicy, Payment,
     PaymentCertificate, PaymentCommitment, PaymentProof, PaymentRecord, PendingAdminAction,
-    ProtocolFeeConfig, QueuedAction, RebateTier, Recipient, RepScore, ResolveAction,
+    ProtocolFeeConfig, QueuedAction, RebateTier, Recipient, RepScore, ResolveAction, RewardPoolInfo, RoundInfo,
     ResolveRule, Role, SimulateReleaseResult, SplitRule, SubscriptionParams, TimelockAction,
     Tombstone, Tranche, TransferRecord, TreasuryRecord, UpgradeProposal,
     // Issue #759
@@ -215,6 +215,10 @@ fn release_delay_key(id: u64) -> (Symbol, u64) {
 }
 fn recipient_whitelist_key(id: u64) -> (Symbol, u64) {
     (symbol_short!("rcp_wl"), id)
+}
+/// Issue #790: co-funding round configuration and state for an invoice.
+fn funding_round_key(id: u64) -> (Symbol, u64) {
+    (symbol_short!("fund_rnd"), id)
 }
 /// Issue #327: ledger sequence when the invoice was fully funded.
 fn funded_at_ledger_key(id: u64) -> (Symbol, u64) {
@@ -3752,6 +3756,19 @@ impl SplitContract {
     // -----------------------------------------------------------------------
 
     /// Return a paginated slice of payment records for the given payer.
+    /// Issue #788: the invoice's reward pool (`bonus_pool`) and whether it has
+    /// been distributed to payers on release.
+    pub fn get_reward_pool(env: Env, invoice_id: u64) -> RewardPoolInfo {
+        let invoice = load_invoice(&env, invoice_id);
+        RewardPoolInfo {
+            pool_amount: invoice.bonus_pool,
+            top_n: invoice.bonus_max_payers,
+            distributed: invoice.bonus_pool > 0
+                && invoice.bonus_max_payers > 0
+                && invoice.status == InvoiceStatus::Released,
+        }
+    }
+
     pub fn get_payer_history(env: Env, payer: Address, offset: u32, limit: u32) -> Vec<PaymentRecord> {
         let hist_key = payer_history_key(&payer);
         let history: Vec<PaymentRecord> = env
@@ -11919,6 +11936,7 @@ impl SplitContract {
                         per_payer
                     };
                     funding_token_client.transfer(&env.current_contract_address(), &payer, &payout);
+                    events::reward_distributed(env, invoice_id, &payer, payout);
                     distributed += payout;
                 }
             }
@@ -12458,6 +12476,120 @@ impl SplitContract {
         save_invoice(&env, invoice_id, &invoice);
         append_audit_entry(&env, invoice_id, symbol_short!("part_ref"), &creator);
         events::partial_refund_issued(&env, invoice_id, &creator, bps, total_refunded);
+    }
+
+    /// Issue #790: run this invoice as a co-funding round capped at `hard_cap`.
+    /// Anything raised above the cap is refunded pro-rata by `close_round`
+    /// once `round_end` has passed. Creator-only, while Pending, set once.
+    pub fn set_funding_round(
+        env: Env,
+        creator: Address,
+        invoice_id: u64,
+        hard_cap: i128,
+        round_end: u64,
+    ) {
+        require_not_paused(&env);
+        creator.require_auth();
+        let invoice = load_invoice(&env, invoice_id);
+        assert!(invoice.creator == creator, "only creator");
+        assert!(
+            invoice.status == InvoiceStatus::Pending,
+            "invoice is not pending"
+        );
+        let total: i128 = invoice.amounts.iter().sum();
+        assert!(hard_cap > 0 && hard_cap <= total, "invalid hard cap");
+        assert!(
+            round_end > env.ledger().timestamp(),
+            "round_end must be in the future"
+        );
+        let key = funding_round_key(invoice_id);
+        assert!(
+            !env.storage().persistent().has(&key),
+            "funding round already set"
+        );
+        let round = RoundInfo {
+            total_raised: 0,
+            hard_cap,
+            round_end,
+            closed: false,
+            overflow: 0,
+        };
+        env.storage().persistent().set(&key, &round);
+    }
+
+    /// Issue #790: the invoice's funding round, with live totals while open.
+    pub fn get_round_info(env: Env, invoice_id: u64) -> RoundInfo {
+        let mut round: RoundInfo = env
+            .storage()
+            .persistent()
+            .get(&funding_round_key(invoice_id))
+            .expect("no funding round");
+        if !round.closed {
+            let funded = load_invoice(&env, invoice_id).funded;
+            round.total_raised = funded;
+            round.overflow = (funded - round.hard_cap).max(0);
+        }
+        round
+    }
+
+    /// Issue #790: close the funding round after `round_end`. If more than
+    /// `hard_cap` was raised, the excess is refunded to payers in proportion to
+    /// their contributions (the last payer absorbs rounding). Callable by anyone.
+    pub fn close_round(env: Env, invoice_id: u64) {
+        require_not_paused(&env);
+        let key = funding_round_key(invoice_id);
+        let mut round: RoundInfo = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("no funding round");
+        assert!(!round.closed, "round already closed");
+        assert!(
+            env.ledger().timestamp() >= round.round_end,
+            "round has not ended"
+        );
+
+        let mut invoice = load_invoice(&env, invoice_id);
+        assert!(
+            invoice.status == InvoiceStatus::Pending,
+            "invoice is not pending"
+        );
+        let total_raised = invoice.funded;
+        let overflow = (total_raised - round.hard_cap).max(0);
+        let mut refunded_count: u32 = 0;
+
+        if overflow > 0 {
+            let mut totals: Map<Address, i128> = Map::new(&env);
+            for payment in invoice.payments.iter() {
+                let prev = totals.get(payment.payer.clone()).unwrap_or(0);
+                totals.set(payment.payer.clone(), prev + payment.amount);
+            }
+            let token_client = token::Client::new(&env, &invoice.tokens.get(0).expect("no token"));
+            let payer_count = totals.len();
+            let mut refunded: i128 = 0;
+            for (i, (payer, contributed)) in totals.iter().enumerate() {
+                let share = if i as u32 == payer_count - 1 {
+                    overflow - refunded
+                } else {
+                    checked_proportion(contributed as u128, overflow as u128, total_raised as u128)
+                        .expect("ArithmeticOverflow")
+                };
+                if share > 0 {
+                    token_client.transfer(&env.current_contract_address(), &payer, &share);
+                    events::payer_refunded(&env, invoice_id, &payer, share);
+                    refunded += share;
+                    refunded_count += 1;
+                }
+            }
+            invoice.funded = total_raised - overflow;
+            save_invoice(&env, invoice_id, &invoice);
+        }
+
+        round.closed = true;
+        round.total_raised = total_raised;
+        round.overflow = overflow;
+        env.storage().persistent().set(&key, &round);
+        events::round_closed(&env, invoice_id, total_raised, overflow, refunded_count);
     }
 
     /// Notify indexers that an invoice has expired.

@@ -1981,6 +1981,32 @@ pub struct RecipientShare {
     pub locked: bool,
 }
 
+/// Issue #790: a co-funding round with a hard cap. While open, `total_raised`
+/// and `overflow` are live; once closed they record the values at close.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoundInfo {
+    pub total_raised: i128,
+    pub hard_cap: i128,
+    /// Ledger timestamp after which `close_round` may be called.
+    pub round_end: u64,
+    pub closed: bool,
+    /// Amount raised above `hard_cap` (refunded pro-rata on close).
+    pub overflow: i128,
+}
+
+/// Issue #788: summary of an invoice's reward (bonus) pool.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RewardPoolInfo {
+    /// Amount the creator funded at creation.
+    pub pool_amount: i128,
+    /// Number of payers the pool is shared between.
+    pub top_n: u32,
+    /// Whether the pool has been paid out (on release).
+    pub distributed: bool,
+}
+
 /// Issue #527: A single payment record stored in a contributor's persistent history.
 #[contracttype]
 #[derive(Clone, Debug)]
