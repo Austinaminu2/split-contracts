@@ -62,6 +62,10 @@ mod visibility_ext;
 mod referral_ext;
 mod pause_ext;
 mod stats;
+mod search_ext;
+mod treasury_gov_ext;
+mod nonce_ext;
+mod group_ext;
 
 #[cfg(test)]
 pub(crate) mod test;
@@ -5389,6 +5393,7 @@ impl SplitContract {
             panic!("contract is paused");
         }
         creator.require_auth();
+        let index_creator = creator.clone();
 
         // Issue #439: check creator cancellation cooldown.
         let current_ledger = env.ledger().sequence() as u64;
@@ -17781,6 +17786,120 @@ impl SplitContract {
 
     /// Get the funding percentage of an invoice as basis points.
     /// Returns (funded * 10_000 / total) as u32, or 0 if total is 0.
+    /// Issue #776: paginated list of invoice IDs created by `creator`.
+    /// `cursor` is the last-seen invoice ID; `limit` is capped at 50.
+    pub fn get_creator_invoices(
+        env: Env,
+        creator: Address,
+        limit: u32,
+        cursor: Option<u64>,
+    ) -> search_ext::InvoicePage {
+        search_ext::get_creator_invoices(&env, creator, limit, cursor)
+    }
+
+    // Issue #777: DAO treasury governance (token-weighted). The DAO treasury is
+    // this contract's balance of the configured USDC token.
+
+    /// Admin: set voting period (ledgers), quorum (bps of `total_supply`) and
+    /// the total token supply used as the quorum denominator.
+    pub fn set_gov_config(env: Env, voting_period_ledgers: u32, quorum_bps: u32, total_supply: i128) {
+        require_admin(&env);
+        treasury_gov_ext::set_config(&env, voting_period_ledgers, quorum_bps, total_supply);
+    }
+
+    pub fn create_proposal(
+        env: Env,
+        proposer: Address,
+        description: Bytes,
+        allocations: Vec<treasury_gov_ext::Allocation>,
+    ) -> u64 {
+        treasury_gov_ext::create_proposal(&env, proposer, description, allocations)
+    }
+
+    pub fn vote_proposal(env: Env, proposal_id: u64, voter: Address, approve: bool) {
+        let token = Self::get_usdc_token(env.clone());
+        treasury_gov_ext::vote(&env, &token, proposal_id, voter, approve);
+    }
+
+    pub fn execute_proposal(env: Env, proposal_id: u64) {
+        let token = Self::get_usdc_token(env.clone());
+        treasury_gov_ext::execute(&env, &token, proposal_id);
+    }
+
+    pub fn get_proposal(env: Env, proposal_id: u64) -> treasury_gov_ext::Proposal {
+        treasury_gov_ext::get_proposal(&env, proposal_id)
+    }
+
+    /// Issue #778: `pay` with optional replay-protection nonce. With `Some`,
+    /// the 32-byte nonce is checked/consumed in temporary storage (TTL 1
+    /// ledger) and `NonceConsumed` is emitted; `None` behaves like `pay`.
+    /// The existing sequential per-payer nonce is supplied automatically.
+    pub fn pay_with_nonce(
+        env: Env,
+        payer: Address,
+        invoice_id: u64,
+        amount: i128,
+        nonce: Option<BytesN<32>>,
+    ) {
+        if let Some(n) = &nonce {
+            nonce_ext::check_unused(&env, n);
+        }
+        let seq: u64 = env
+            .storage()
+            .persistent()
+            .get(&nonce_key(invoice_id, &payer))
+            .unwrap_or(0);
+        Self::pay(env.clone(), payer.clone(), invoice_id, amount, seq, false, false, None);
+        if let Some(n) = nonce {
+            nonce_ext::consume(&env, invoice_id, &payer, &n);
+        }
+    }
+
+    pub fn is_nonce_used(env: Env, nonce: BytesN<32>) -> bool {
+        nonce_ext::is_used(&env, &nonce)
+    }
+
+    // Issue #779: campaign groups linking related invoices.
+
+    pub fn create_group(env: Env, creator: Address, name: Symbol, description: Bytes) -> u64 {
+        group_ext::create_group(&env, creator, name, description)
+    }
+
+    /// Only the group creator (who must also own the invoice) may add; max 20.
+    pub fn add_invoice_to_group(env: Env, group_id: u64, invoice_id: u64, creator: Address) {
+        creator.require_auth();
+        let invoice = load_invoice(&env, invoice_id);
+        assert!(invoice.creator == creator, "not invoice creator");
+        group_ext::add_invoice(&env, group_id, invoice_id, &creator);
+    }
+
+    pub fn get_group_invoices(env: Env, group_id: u64) -> Vec<u64> {
+        group_ext::get_invoices(&env, group_id)
+    }
+
+    pub fn get_group_stats(env: Env, group_id: u64) -> group_ext::GroupStats {
+        let group = group_ext::get_group(&env, group_id);
+        let mut total_target: i128 = 0;
+        let mut total_funded: i128 = 0;
+        let mut fully_funded_count: u32 = 0;
+        for id in group.invoices.iter() {
+            let inv = load_invoice(&env, id);
+            let target: i128 = inv.amounts.iter().sum();
+            total_target += target;
+            total_funded += inv.funded;
+            if inv.funded >= target {
+                fully_funded_count += 1;
+            }
+        }
+        group_ext::GroupStats {
+            name: group.name,
+            total_target,
+            total_funded,
+            invoice_count: group.invoices.len(),
+            fully_funded_count,
+        }
+    }
+
     pub fn get_invoice_funding_percentage(env: Env, invoice_id: u64) -> u32 {
         let invoice = load_invoice(&env, invoice_id);
         let total: i128 = invoice.amounts.iter().sum();
