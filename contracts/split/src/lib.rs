@@ -8527,7 +8527,12 @@ impl SplitContract {
                 .set(&receipt_token_key(invoice_id, payer), &receipt_addr);
         }
 
-        if invoice.funded >= total {
+        // Issue #805: a total within the variance tolerance counts as fully funded.
+        let within_variance = funded_within_variance(env, invoice_id, invoice.funded, total);
+        if within_variance {
+            events::fully_funded_with_variance(env, invoice_id, invoice.funded, total);
+        }
+        if invoice.funded >= total || within_variance {
             if let Some(hold) = invoice.escrow_hold_period {
                 if invoice.held_until.is_none() {
                     let unlock = env.ledger().sequence().saturating_add(hold);
@@ -8571,6 +8576,8 @@ impl SplitContract {
                         < (invoice.amounts.iter().sum::<i128>() * invoice.min_funding_bps as i128
                             / 10_000))
                 || has_release_delay
+                // Issue #806: hold funds while a recipient vetoes release.
+                || !release_vetoes(env, invoice_id).is_empty()
                 || invoice.held_until.is_some()
                 || invoice
                     .scheduled_release_at
@@ -9177,6 +9184,11 @@ impl SplitContract {
                 // Emit event the first time funds become releasable.
                 events::funds_unlocked(&env, invoice_id, unlock_at);
             }
+        }
+
+        // Issue #806: any standing recipient veto blocks release.
+        if !release_vetoes(env, invoice_id).is_empty() {
+            panic!("VetoBlocked");
         }
 
         // Approval check (issue #25).
