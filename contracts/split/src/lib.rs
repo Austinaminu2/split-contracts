@@ -434,6 +434,16 @@ fn template_version_count_key(creator: &Address, name: &Symbol) -> (Symbol, Addr
     (symbol_short!("tmpl_ct"), creator.clone(), name.clone())
 }
 
+/// Issue #829: cumulative amount reversed for (invoice_id, payer).
+fn reversed_amount_key(invoice_id: u64, payer: &Address) -> (Symbol, u64, Address) {
+    (symbol_short!("pay_rev"), invoice_id, payer.clone())
+}
+
+/// Issue #831: invoice ids linked to a payment transaction hash.
+fn payment_hash_key(tx_hash: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (symbol_short!("pay_hash"), tx_hash.clone())
+}
+
 /// Issue #209: pending payout key per (invoice_id, recipient).
 fn pending_payout_key(invoice_id: u64, recipient: &Address) -> (Symbol, u64, Address) {
     (symbol_short!("pend_pay"), invoice_id, recipient.clone())
@@ -16210,6 +16220,129 @@ impl SplitContract {
         } else {
             ((invoice.funded * 10_000) / total) as u32
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #829: Payment reversal via dispute
+    // -----------------------------------------------------------------------
+
+    /// Reverse up to `amount` of `payer`'s contribution on a disputed invoice.
+    /// Only the designated arbiter may approve a reversal. The reversed amount
+    /// is returned to the payer and deducted from `funded`; the cumulative
+    /// reversed amount can never exceed the payer's total contribution.
+    pub fn reverse_payment(env: Env, invoice_id: u64, arbiter: Address, payer: Address, amount: i128) {
+        require_not_paused(&env);
+        arbiter.require_auth();
+        assert!(amount > 0, "amount must be positive");
+
+        let mut invoice = load_invoice(&env, invoice_id);
+        assert!(
+            invoice.arbiter.as_ref() == Some(&arbiter),
+            "not the designated arbiter"
+        );
+        assert!(invoice.disputed, "invoice is not disputed");
+
+        let contributed: i128 = invoice
+            .payments
+            .iter()
+            .filter(|p| p.payer == payer)
+            .map(|p| p.amount)
+            .sum();
+        let key = reversed_amount_key(invoice_id, &payer);
+        let reversed: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        let new_reversed = reversed.checked_add(amount).expect("overflow");
+        assert!(new_reversed <= contributed, "reversal exceeds contribution");
+        assert!(amount <= invoice.funded, "reversal exceeds funded amount");
+
+        env.storage().persistent().set(&key, &new_reversed);
+        invoice.funded -= amount;
+        save_invoice(&env, invoice_id, &invoice);
+
+        token::Client::new(&env, &invoice.tokens.get(0).expect("no token")).transfer(
+            &env.current_contract_address(),
+            &payer,
+            &amount,
+        );
+        events::payment_reversed(&env, invoice_id, &arbiter, &payer, amount);
+        append_audit_entry(&env, invoice_id, symbol_short!("pay_rev"), &arbiter);
+    }
+
+    /// Return the cumulative amount reversed for `payer` on `invoice_id`.
+    pub fn get_reversed_amount(env: Env, invoice_id: u64, payer: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&reversed_amount_key(invoice_id, &payer))
+            .unwrap_or(0)
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #830: Contract version compatibility check
+    // -----------------------------------------------------------------------
+
+    /// Return `true` if `client_version` is compatible with this contract
+    /// build (i.e. not older than [`migrations::CURRENT_SCHEMA_VERSION`]).
+    /// Emits a `cli_old` warning event when the client is outdated.
+    pub fn check_client_version(env: Env, client_version: u32) -> bool {
+        let contract_version = migrations::CURRENT_SCHEMA_VERSION;
+        if client_version < contract_version {
+            events::client_outdated(&env, client_version, contract_version);
+            return false;
+        }
+        true
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #831: Invoice search by payment hash
+    // -----------------------------------------------------------------------
+
+    /// Link a payment transaction hash to an invoice. Only a payer who has
+    /// contributed to the invoice may link a hash.
+    pub fn link_payment_hash(env: Env, invoice_id: u64, payer: Address, tx_hash: BytesN<32>) {
+        require_not_paused(&env);
+        payer.require_auth();
+        let invoice = load_invoice(&env, invoice_id);
+        assert!(
+            invoice.payments.iter().any(|p| p.payer == payer),
+            "caller is not a contributor"
+        );
+        let key = payment_hash_key(&tx_hash);
+        let mut ids: Vec<u64> = env.storage().persistent().get(&key).unwrap_or(Vec::new(&env));
+        if !ids.contains(invoice_id) {
+            ids.push_back(invoice_id);
+            env.storage().persistent().set(&key, &ids);
+        }
+        events::payment_hash_linked(&env, invoice_id, &payer, &tx_hash);
+    }
+
+    /// Find all invoice ids linked to the given payment transaction hash.
+    pub fn find_invoices_by_payment_hash(env: Env, tx_hash: BytesN<32>) -> Vec<u64> {
+        env.storage()
+            .persistent()
+            .get(&payment_hash_key(&tx_hash))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #832: Payment aggregation
+    // -----------------------------------------------------------------------
+
+    /// Combine many small payments into a single payment. The positive
+    /// `amounts` (at most 50) are summed and settled as one `pay` call.
+    pub fn pay_aggregated(env: Env, payer: Address, invoice_id: u64, amounts: Vec<i128>, nonce: u64) {
+        require_fn_not_paused(&env, &symbol_short!("pay"));
+        require_not_frozen(&env);
+        payer.require_auth();
+        let count = amounts.len();
+        assert!(count > 0 && count <= 50, "invalid aggregation size");
+        let mut total: i128 = 0;
+        for a in amounts.iter() {
+            assert!(a > 0, "amount must be positive");
+            total = total.checked_add(a).expect("overflow");
+        }
+
+        Self::enforce_invoice_rate_limit(&env, invoice_id, &payer);
+        Self::_pay(&env, &payer, invoice_id, total, nonce, false, None, None, false);
+        events::payments_aggregated(&env, invoice_id, &payer, count, total);
     }
 }
 

@@ -9119,3 +9119,120 @@ fn test_contribution_cap_no_cap_set_no_restriction() {
     assert_eq!(c.get_payer_contribution_total(&id, &payer), 1000);
 }
 
+
+// ---------------------------------------------------------------------------
+// Issues #829–#832
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_829_reverse_payment_via_dispute() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let tk = token_client(&env, &token_id);
+    let (creator, recipient, payer, arbiter) = (
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+    );
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &100);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &creator, &recipient, 200, &token_id, 9_999);
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    c.set_arbiter(&Address::generate(&env), &id, &arbiter);
+    c.raise_dispute(&id, &arbiter);
+
+    c.reverse_payment(&id, &arbiter, &payer, &60_i128);
+    assert_eq!(tk.balance(&payer), 60);
+    assert_eq!(c.get_invoice(&id).funded, 40);
+    assert_eq!(c.get_reversed_amount(&id, &payer), 60);
+
+    // Cannot reverse more than the payer contributed in total.
+    assert!(c.try_reverse_payment(&id, &arbiter, &payer, &41_i128).is_err());
+    // Only the designated arbiter may reverse.
+    assert!(c
+        .try_reverse_payment(&id, &Address::generate(&env), &payer, &1_i128)
+        .is_err());
+}
+
+#[test]
+fn test_829_reverse_payment_requires_dispute() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let (payer, arbiter) = (Address::generate(&env), Address::generate(&env));
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &100);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &Address::generate(&env), &Address::generate(&env), 200, &token_id, 9_999);
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    c.set_arbiter(&Address::generate(&env), &id, &arbiter);
+    assert!(c.try_reverse_payment(&id, &arbiter, &payer, &10_i128).is_err());
+}
+
+#[test]
+fn test_830_check_client_version() {
+    let (env, contract_id, _) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let current = migrations::CURRENT_SCHEMA_VERSION;
+    assert!(c.check_client_version(&current));
+    assert!(c.check_client_version(&(current + 1)));
+    assert!(!c.check_client_version(&(current - 1)));
+    assert!(!env.events().all().is_empty());
+}
+
+#[test]
+fn test_831_find_invoices_by_payment_hash() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &100);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &Address::generate(&env), &Address::generate(&env), 200, &token_id, 9_999);
+    let hash = BytesN::from_array(&env, &[7u8; 32]);
+
+    assert!(c.find_invoices_by_payment_hash(&hash).is_empty());
+    // Non-contributors cannot link a hash.
+    assert!(c.try_link_payment_hash(&id, &payer, &hash).is_err());
+
+    c.pay(&payer, &id, &50_i128, &0_u64, &false, &false, &None);
+    c.link_payment_hash(&id, &payer, &hash);
+    c.link_payment_hash(&id, &payer, &hash); // idempotent
+    let found = c.find_invoices_by_payment_hash(&hash);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found.get(0).unwrap(), id);
+}
+
+#[test]
+fn test_832_pay_aggregated() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let tk = token_client(&env, &token_id);
+    let (payer, recipient) = (Address::generate(&env), Address::generate(&env));
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &500);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &Address::generate(&env), &recipient, 200, &token_id, 9_999);
+
+    let mut amounts = Vec::new(&env);
+    for a in [50_i128, 70, 80] {
+        amounts.push_back(a);
+    }
+    c.pay_aggregated(&payer, &id, &amounts, &0_u64);
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Released);
+    assert_eq!(tk.balance(&recipient), 200);
+    assert_eq!(tk.balance(&payer), 300);
+}
+
+#[test]
+fn test_832_pay_aggregated_rejects_invalid() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &500);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &Address::generate(&env), &Address::generate(&env), 200, &token_id, 9_999);
+
+    assert!(c.try_pay_aggregated(&payer, &id, &Vec::new(&env), &0_u64).is_err());
+    let mut bad = Vec::new(&env);
+    bad.push_back(10_i128);
+    bad.push_back(0_i128);
+    assert!(c.try_pay_aggregated(&payer, &id, &bad, &0_u64).is_err());
+}

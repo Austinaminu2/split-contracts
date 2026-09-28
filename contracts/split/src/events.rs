@@ -1989,6 +1989,67 @@ pub fn batch_created(env: &Env, creator: &Address, invoice_ids: &Vec<u64>, count
 }
 
 // ---------------------------------------------------------------------------
+// Issue #829: Payment reversal via dispute
+// ---------------------------------------------------------------------------
+
+/// Emitted when the arbiter reverses (part of) a payer's contribution on a
+/// disputed invoice.
+///
+/// Topics: (split, pay_rev, invoice_id)
+/// Data:   (arbiter, payer, amount)
+pub fn payment_reversed(env: &Env, invoice_id: u64, arbiter: &Address, payer: &Address, amount: i128) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("pay_rev"), invoice_id),
+        (arbiter.clone(), payer.clone(), amount),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #830: Contract version compatibility check
+// ---------------------------------------------------------------------------
+
+/// Emitted when a client reports a version older than the contract's.
+///
+/// Topics: (split, cli_old)
+/// Data:   (client_version, contract_version)
+pub fn client_outdated(env: &Env, client_version: u32, contract_version: u32) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("cli_old")),
+        (client_version, contract_version),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #831: Invoice search by payment hash
+// ---------------------------------------------------------------------------
+
+/// Emitted when a payer links a transaction hash to an invoice payment.
+///
+/// Topics: (split, pay_hash, invoice_id)
+/// Data:   (payer, tx_hash)
+pub fn payment_hash_linked(env: &Env, invoice_id: u64, payer: &Address, tx_hash: &BytesN<32>) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("pay_hash"), invoice_id),
+        (payer.clone(), tx_hash.clone()),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #832: Payment aggregation
+// ---------------------------------------------------------------------------
+
+/// Emitted when several small payments are combined into a single payment.
+///
+/// Topics: (split, pay_agg, invoice_id)
+/// Data:   (payer, count, total)
+pub fn payments_aggregated(env: &Env, invoice_id: u64, payer: &Address, count: u32, total: i128) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("pay_agg"), invoice_id),
+        (payer.clone(), count, total),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests for the per-invoice event sequence counter (issue #708)
 // ---------------------------------------------------------------------------
 
