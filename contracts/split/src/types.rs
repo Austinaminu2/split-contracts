@@ -1691,6 +1691,8 @@ pub struct ConfidentialPayment {
 pub struct InvoiceParams {
     pub creator: Address,
     pub recipients: Vec<Address>,
+    pub payment_token: Option<Address>,
+    pub tags: Option<Vec<String>>,
     // ... add all other fields here ...
 }
 
