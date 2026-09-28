@@ -527,6 +527,16 @@ fn template_version_count_key(creator: &Address, name: &Symbol) -> (Symbol, Addr
     (symbol_short!("tmpl_ct"), creator.clone(), name.clone())
 }
 
+/// Issue #829: cumulative amount reversed for (invoice_id, payer).
+fn reversed_amount_key(invoice_id: u64, payer: &Address) -> (Symbol, u64, Address) {
+    (symbol_short!("pay_rev"), invoice_id, payer.clone())
+}
+
+/// Issue #831: invoice ids linked to a payment transaction hash.
+fn payment_hash_key(tx_hash: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (symbol_short!("pay_hash"), tx_hash.clone())
+}
+
 /// Issue #209: pending payout key per (invoice_id, recipient).
 fn pending_payout_key(invoice_id: u64, recipient: &Address) -> (Symbol, u64, Address) {
     (symbol_short!("pend_pay"), invoice_id, recipient.clone())
