@@ -145,10 +145,13 @@ pub enum ContractError {
     AlreadyPaid = 65,
     /// Recipient list is shorter than the configured minimum recipient count.
     TooFewRecipients = 66,
-    /// Issue #757: Creator attempted to cancel an invoice that already has one or more payments.
-    CannotCancelFundedInvoice = 67,
-    /// Issue #758: Subscription trigger was called before the interval has elapsed.
-    TooEarlyToTrigger = 68,
-    /// Issue #756: Invoice has reached the maximum allowed number of notes (10).
-    NoteLimitReached = 69,
+    /// Issue #747: Payment would push a payer's running total past the per-payer
+    /// contribution cap (`max_contribution_per_payer`) set on the invoice.
+    ContributionCapExceeded = 67,
+    /// Issue #746: Basis points value is out of the valid range (1–10 000).
+    InvalidBps = 68,
+    /// Issue #744: Batch size exceeds the hard cap of 20 invoices per call.
+    BatchTooLarge = 69,
+    /// Issue #745: The invoice has already been expired and all payers refunded.
+    InvoiceExpired = 70,
 }
