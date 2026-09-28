@@ -160,6 +160,9 @@ fn platform_fee_bps_key() -> Symbol {
     symbol_short!("plat_fee")
 }
 #[allow(dead_code)]
+/// Issue #803: maximum creator commission, in basis points (5%).
+const MAX_CREATOR_FEE_BPS: u32 = 500;
+
 fn creator_fee_bps_key(invoice_id: u64) -> (Symbol, u64) {
     (symbol_short!("cr_fee_bp"), invoice_id)
 }
@@ -1504,6 +1507,25 @@ fn update_creator_payers(env: &Env, creator: &Address, payer: &Address) {
 /// Issue #438: anonymity mode flag for an invoice — persistent storage.
 fn anonymous_recipients_key(invoice_id: u64) -> (Symbol, u64) {
     (symbol_short!("anon_rec"), invoice_id)
+}
+
+/// Issue #808: payer anonymity flag for an invoice — persistent storage.
+fn payer_anonymity_key(invoice_id: u64) -> (Symbol, u64) {
+    (symbol_short!("anon_pay"), invoice_id)
+}
+
+/// Issue #808: whether payment events for this invoice carry a payer hash
+/// instead of the payer address.
+fn payer_anonymity_enabled(env: &Env, invoice_id: u64) -> bool {
+    env.storage()
+        .persistent()
+        .get(&payer_anonymity_key(invoice_id))
+        .unwrap_or(false)
+}
+
+/// Issue #808: sha256 of the payer address's XDR encoding.
+fn hash_payer(env: &Env, payer: &Address) -> BytesN<32> {
+    env.crypto().sha256(&payer.clone().to_xdr(env)).into()
 }
 
 /// Issue #438: recipient commitment hash — persistent storage (invoice_id, index).
@@ -3921,6 +3943,8 @@ impl SplitContract {
         invoice.disputed = false;
         save_invoice(&env, invoice_id, &invoice);
         events::dispute_expired(&env, invoice_id);
+        // Issue #804: the timeout default is to release (funds become releasable).
+        events::dispute_auto_resolved(&env, invoice_id, &DisputeOutcome::Release);
         events::invoice_state_changed(&env, invoice_id, Some(&InvoiceStatus::Disputed),
             &InvoiceStatus::Pending, &env.current_contract_address());
         append_audit_entry(&env, invoice_id, symbol_short!("disp_cls"), &env.current_contract_address());
@@ -5746,6 +5770,11 @@ impl SplitContract {
         assert!(
             (creator_fee_bps as u64 + platform_fee_bps as u64) <= 10_000,
             "FeeSumExceedsCap"
+        );
+        // Issue #803: creator commission is capped at 5%.
+        assert!(
+            creator_fee_bps <= MAX_CREATOR_FEE_BPS,
+            "creator_fee_bps exceeds 500 bps cap"
         );
         if tax_bps > 0 {
             assert!(
@@ -16849,6 +16878,33 @@ impl SplitContract {
             .persistent()
             .get(&anonymous_recipients_key(invoice_id))
             .unwrap_or(false)
+    }
+
+    /// Issue #808: hide payer addresses in this invoice's payment events,
+    /// which then carry `sha256(payer XDR)` instead. Creator-only, while Pending.
+    pub fn set_payer_anonymity(env: Env, creator: Address, invoice_id: u64, enabled: bool) {
+        require_not_paused(&env);
+        creator.require_auth();
+        let invoice = load_invoice(&env, invoice_id);
+        assert!(invoice.creator == creator, "only creator");
+        assert!(
+            invoice.status == InvoiceStatus::Pending,
+            "invoice is not pending"
+        );
+        env.storage()
+            .persistent()
+            .set(&payer_anonymity_key(invoice_id), &enabled);
+    }
+
+    /// Issue #808: whether payer anonymity is enabled for this invoice.
+    pub fn is_payer_anonymous(env: Env, invoice_id: u64) -> bool {
+        payer_anonymity_enabled(&env, invoice_id)
+    }
+
+    /// Issue #808: the hash a payer appears as in anonymous payment events,
+    /// so they can find their own payments.
+    pub fn get_payer_hash(env: Env, payer: Address) -> BytesN<32> {
+        hash_payer(&env, &payer)
     }
 
     // -----------------------------------------------------------------------

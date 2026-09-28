@@ -83,6 +83,19 @@ pub fn forward_configured(env: &Env, invoice_id: u64, forward_to: &Address) {
 /// Data: (payer, amount, token, event_seq)
 pub fn payment_received(env: &Env, invoice_id: u64, payer: &Address, amount: i128, token: &Address) {
     let event_seq = next_seq(env, invoice_id);
+    // Issue #808: anonymous invoices publish a payer hash, never the address.
+    if crate::payer_anonymity_enabled(env, invoice_id) {
+        env.events().publish(
+            (symbol_short!("split"), symbol_short!("paid"), invoice_id),
+            (
+                crate::hash_payer(env, payer),
+                amount,
+                token.clone(),
+                event_seq,
+            ),
+        );
+        return;
+    }
     env.events().publish(
         (symbol_short!("split"), symbol_short!("paid"), invoice_id),
         (payer.clone(), amount, token.clone(), event_seq),
