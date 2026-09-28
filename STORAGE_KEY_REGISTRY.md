@@ -154,32 +154,14 @@ Keys with two or three fields for efficient multi-dimensional lookups.
 | `TemplateVersion(creator, name, version)` | `(Symbol, Address, Symbol, u32)` | #210 | InvoiceTemplate | Versioned template for (creator, name, version) |
 | `TemplateVersionCount(creator, name)` | `(Symbol, Address, Symbol)` | #210 | u32 | Template version counter for (creator, name) |
 
-### Module-owned keys: `schedule_ext::ScheduleKey` (persistent, #780)
+## Extension modules (own key enums)
 
-| Key | Value | Description |
-|-----|-------|-------------|
-| `Schedule(invoice_id)` | `Vec<Option<u64>>` | Per-recipient `release_at`, aligned with `invoice.recipients` |
-| `Paid(invoice_id)` | `Vec<bool>` | Per-recipient paid flag for scheduled release |
-
-### Module-owned keys: `compliance_ext::ComplianceKey` (instance, #781)
-
-| Key | Value | Description |
-|-----|-------|-------------|
-| `KycRegistry` | `Address` | KYC registry contract exposing `is_approved(Address) -> bool` |
-
-### Module-owned keys: `stream_ext::StreamKey` (#782)
-
-| Key | Tier | Value | Description |
-|-----|------|-------|-------------|
-| `Stream(stream_id)` | persistent | `Stream` | Streaming payment state |
-| `Counter` | instance | `u64` | Last issued stream id |
-
-### Module-owned keys: `validator_ext::ValidatorKey` (#783)
-
-| Key | Tier | Value | Description |
-|-----|------|-------|-------------|
-| `Validator(invoice_id)` | persistent | `Address` | Validator contract for an invoice |
-| `Busy` | temporary | `bool` | Re-entrancy lock during the validator call |
+| Enum | Variant | Tier | Issue | Value | Purpose |
+|------|---------|------|-------|-------|---------|
+| `MatchKey` (`match_pool_ext.rs`) | `Pool(u64)` | persistent | #786 | Vec<MatchPledge> | Matching pledges per invoice |
+| `AnalyticsKey` (`analytics_ext.rs`) | `Stats` | instance | #787 | StoredStats | Invoice count, paid total, unique creator/payer counts |
+| `AnalyticsKey` (`analytics_ext.rs`) | `Creator(Address)` | persistent | #787 | bool | Creator already counted |
+| `AnalyticsKey` (`analytics_ext.rs`) | `Payer(Address)` | persistent | #787 | bool | Payer already counted |
 
 ## Migration Guide
 
@@ -206,6 +188,25 @@ pub fn upgrade(env: Env) {
 }
 ```
 
+## Additional key helpers (issues #748–#751)
+
+Newer entry points declare their keys through standalone helper functions in
+`contracts/split/src/lib.rs` rather than `StorageKey` variants. The keys added
+by issues #748–#751 are:
+
+| Key helper | XDR value | Tier | Value type | Purpose |
+|------------|-----------|------|------------|---------|
+| `treasury_balance_key()` | `0000000f000000077472735f62616c00` (`trs_bal`) | instance | `i128` | Issue #751: protocol fees withheld from payments, awaiting `withdraw_treasury` |
+
+The remaining functionality in this group introduces no new storage keys:
+
+- **#748** (templates with overrides) reuses `Template(creator, name)`,
+  `TemplateVersion(creator, name, version)` and `TemplateVersionCount(creator, name)`.
+- **#749** (payer whitelist) reuses the per-invoice `InvoiceExt` entry, where
+  `allowed_payers` already lives.
+- **#750** (clone lineage) reuses the per-invoice `parent_invoice_id` /
+  `clone_depth` fields; `get_lineage` is a pure read that walks them.
+
 ## Uniqueness Validation
 
 Unit tests in `storage_keys.rs` verify that:
@@ -219,3 +220,16 @@ Run tests with:
 ```sh
 cargo test --lib storage_keys
 ```
+
+## Persistent Storage: module-owned key enums
+
+Newer features keep their keys in small `#[contracttype]` enums that live next to
+their logic, so the shared `StorageKey` / `InvoiceKey` enums (50-variant Soroban
+limit) are not consumed.
+
+| Enum::Variant | Module | Issue | Value | Purpose |
+|---------------|--------|-------|-------|---------|
+| `AttestKey::Attestations(id)` | `attest_ext.rs` | #768 | Vec<Attestation> | Third-party attestations for an invoice (max 5) |
+| `DelegateKey::Delegates(id)` | `delegate_ext.rs` | #769 | Vec<Address> | Creator-appointed delegates (max 3) |
+| `TtlKey::ExtendedUntil(id)` | `ttl_ext.rs` | #770 | u32 | Ledger up to which the invoice TTL was last extended |
+| `TierKey::Tiers(id)` / `TierKey::Unlocked(id)` | `tiers_ext.rs` | #771 | Vec<FundingTier> / Vec<u32> | Funding tiers and indices of unlocked tiers |

@@ -145,18 +145,13 @@ pub enum ContractError {
     AlreadyPaid = 65,
     /// Recipient list is shorter than the configured minimum recipient count.
     TooFewRecipients = 66,
-    /// Issue #780: schedule length mismatch, or invoice not pending/unfunded.
-    ScheduleInvalid = 120,
-    /// Issue #780: no recipient schedule is set for this invoice.
-    NoScheduleSet = 121,
-    /// Issue #781: payer is not approved by the KYC registry.
-    KycNotApproved = 122,
-    /// Issue #782: stream id does not exist.
-    StreamNotFound = 125,
-    /// Issue #782: stream has been cancelled.
-    StreamNotActive = 126,
-    /// Issue #783: the invoice's validator contract returned `false`.
-    PaymentRejectedByValidator = 123,
-    /// Issue #783: the validator contract call failed (panic/trap/bad return).
-    ValidatorCallFailed = 124,
+    /// Issue #747: Payment would push a payer's running total past the per-payer
+    /// contribution cap (`max_contribution_per_payer`) set on the invoice.
+    ContributionCapExceeded = 67,
+    /// Issue #746: Basis points value is out of the valid range (1–10 000).
+    InvalidBps = 68,
+    /// Issue #744: Batch size exceeds the hard cap of 20 invoices per call.
+    BatchTooLarge = 69,
+    /// Issue #745: The invoice has already been expired and all payers refunded.
+    InvoiceExpired = 70,
 }

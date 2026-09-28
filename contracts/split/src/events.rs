@@ -27,7 +27,7 @@
 
 use crate::storage_keys::ev_seq_key;
 use crate::types::{DisputeOutcome, FeeSplit, InvoicePhase, InvoiceStatus, OverfundingPolicy, RepScore, TimelockAction};
-use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, String, Symbol, Vec};
 
 // ---------------------------------------------------------------------------
 // Event sequence helper (per-invoice, temporary-storage counter)
@@ -83,6 +83,19 @@ pub fn forward_configured(env: &Env, invoice_id: u64, forward_to: &Address) {
 /// Data: (payer, amount, token, event_seq)
 pub fn payment_received(env: &Env, invoice_id: u64, payer: &Address, amount: i128, token: &Address) {
     let event_seq = next_seq(env, invoice_id);
+    // Issue #808: anonymous invoices publish a payer hash, never the address.
+    if crate::payer_anonymity_enabled(env, invoice_id) {
+        env.events().publish(
+            (symbol_short!("split"), symbol_short!("paid"), invoice_id),
+            (
+                crate::hash_payer(env, payer),
+                amount,
+                token.clone(),
+                event_seq,
+            ),
+        );
+        return;
+    }
     env.events().publish(
         (symbol_short!("split"), symbol_short!("paid"), invoice_id),
         (payer.clone(), amount, token.clone(), event_seq),
@@ -1041,6 +1054,11 @@ pub fn fee_recipients_updated(env: &Env, recipients: &Vec<FeeSplit>) {
 ///
 /// Topics: (split, fee_paid, invoice_id)
 /// Data: (amount, treasury, ledger)
+///
+/// Issue #751 moved protocol-fee collection to payment time (see
+/// `protocol_fee_charged`), so this event is retained only for indexers that
+/// still subscribe to the historical release-time fee.
+#[allow(dead_code)]
 pub fn fee_paid(env: &Env, invoice_id: u64, amount: i128, treasury: &Address) {
     env.events().publish(
         (
@@ -1372,18 +1390,56 @@ pub fn role_revoked(env: &Env, grantee: &Address, role_discriminant: u32, admin:
     );
 }
 
-/// Issue #474: Emitted when a creator cancels an open invoice and all contributors are refunded.
+/// Issue #474 / #757: Emitted when a creator cancels an invoice before any payment is made.
+///
+/// Spec: `InvoiceCancelled { invoice_id, creator, timestamp }`.
 /// Topics: (split, inv_cncl, invoice_id)
-/// Data: (creator, total_refunded, ledger)
-#[allow(dead_code)]
-pub fn invoice_cancelled(env: &Env, invoice_id: u64, creator: &Address, total_refunded: i128) {
+/// Data: (creator, timestamp)
+pub fn invoice_cancelled(env: &Env, invoice_id: u64, creator: &Address) {
     env.events().publish(
         (
             symbol_short!("split"),
             symbol_short!("inv_cncl"),
             invoice_id,
         ),
-        (creator.clone(), total_refunded, env.ledger().sequence()),
+        (creator.clone(), env.ledger().timestamp()),
+    );
+}
+
+/// Issue #756: Emitted when the invoice creator posts a new on-chain note.
+///
+/// Spec: `NoteAdded { invoice_id, index, timestamp }`.
+/// Topics: (split, note_add, invoice_id)
+/// Data: (index, timestamp)
+pub fn note_added(env: &Env, invoice_id: u64, index: u32) {
+    env.events().publish(
+        (
+            symbol_short!("split"),
+            symbol_short!("note_add"),
+            invoice_id,
+        ),
+        (index, env.ledger().timestamp()),
+    );
+}
+
+/// Issue #758: Emitted when a subscription cycle is triggered and a new invoice is created.
+///
+/// Spec: `SubscriptionTriggered { subscription_id, new_invoice_id, next_due }`.
+/// Topics: (split, sub_trig, subscription_id)
+/// Data: (new_invoice_id, next_due)
+pub fn subscription_triggered(
+    env: &Env,
+    subscription_id: u64,
+    new_invoice_id: u64,
+    next_due: u64,
+) {
+    env.events().publish(
+        (
+            symbol_short!("split"),
+            symbol_short!("sub_trig"),
+            subscription_id,
+        ),
+        (new_invoice_id, next_due),
     );
 }
 
@@ -1914,9 +1970,194 @@ pub fn deadline_extended(env: &Env, invoice_id: u64, old_deadline: u64, new_dead
     );
 }
 
+/// Issue #753: Emitted when the invoice's payment token is overridden at creation.
+/// Topics: (split, pmtk_set, invoice_id)
+/// Data: token address
+pub fn payment_token_set(env: &Env, invoice_id: u64, token: &Address) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("pmtk_set"), invoice_id),
+        token.clone(),
+    );
+}
+
+/// Issue #752: Emitted when an NFT is successfully minted on full funding.
+/// Topics: (split, nft_mint, invoice_id)
+/// Data: (creator, nft_contract)
+pub fn nft_minted(env: &Env, invoice_id: u64, creator: &Address, nft_contract: &Address) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("nft_mint"), invoice_id),
+        (creator.clone(), nft_contract.clone()),
+    );
+}
+
+/// Issue #752: Emitted when an NFT mint fails (best-effort, does not revert).
+/// Topics: (split, nft_fail, invoice_id)
+/// Data: invoice_id
+pub fn nft_mint_failed(env: &Env, invoice_id: u64) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("nft_fail"), invoice_id),
+        invoice_id,
+    );
+}
+
+/// Issue #754: Emitted when invoice tags are added or removed.
+/// Topics: (split, tags_upd, invoice_id)
+/// Data: (added, removed)
+pub fn tags_updated(env: &Env, invoice_id: u64, added: &Vec<String>, removed: &Vec<String>) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("tags_upd"), invoice_id),
+        (added.clone(), removed.clone()),
+    );
+}
+
+/// Issue #755: Emitted when a deadline extension vote succeeds.
+/// Topics: (split, dl_extd, invoice_id)
+/// Data: (new_deadline, extension_count)
+pub fn deadline_extended_with_count(env: &Env, invoice_id: u64, new_deadline: u64, extension_count: u32) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("dl_extd"), invoice_id),
+        (new_deadline, extension_count),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #747: Per-payer contribution cap
+// ---------------------------------------------------------------------------
+
+/// Emitted when a payment is rejected because the payer would exceed their
+/// per-invoice contribution cap.
+///
+/// Topics: (split, cap_hit, invoice_id)
+/// Data:   (payer, cap)
+pub fn contribution_cap_hit(env: &Env, invoice_id: u64, payer: &Address, cap: i128) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("cap_hit"), invoice_id),
+        (payer.clone(), cap),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #746: Partial release
+// ---------------------------------------------------------------------------
+
+/// Emitted when a partial release is executed via `release_partial`.
+///
+/// Topics: (split, part_rel, invoice_id)
+/// Data:   (bps, amount_released, remaining)
+pub fn partial_released(
+    env: &Env,
+    invoice_id: u64,
+    bps: u32,
+    amount_released: i128,
+    remaining: i128,
+) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("part_rel"), invoice_id),
+        (bps, amount_released, remaining),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #745: Invoice expiry auto-refund
+// ---------------------------------------------------------------------------
+
+/// Emitted when `trigger_expiry` successfully expires an invoice and refunds
+/// all payers in one atomic call.
+///
+/// Topics: (split, inv_exp, invoice_id)
+/// Data:   (refunded_count, total_refunded)
+pub fn invoice_expired_refunded(
+    env: &Env,
+    invoice_id: u64,
+    refunded_count: u32,
+    total_refunded: i128,
+) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("inv_exp"), invoice_id),
+        (refunded_count, total_refunded),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #744: Batch invoice creation
+// ---------------------------------------------------------------------------
+
+/// Emitted once after a successful `batch_create_invoices` call carrying all
+/// newly created invoice IDs (in creation order) and the creator address.
+///
+/// Topics: (split, batch_crt)
+/// Data:   (creator, invoice_ids, count)
+pub fn batch_created(env: &Env, creator: &Address, invoice_ids: &Vec<u64>, count: u32) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("batch_crt")),
+        (creator.clone(), invoice_ids.clone(), count),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests for the per-invoice event sequence counter (issue #708)
 // ---------------------------------------------------------------------------
+
+/// Issue #809: an invoice was released by `trigger_auto_release` after its
+/// auto-release condition was met.
+/// Topics: (split, auto_rel, invoice_id)
+/// Data: ledger timestamp at release
+pub fn auto_release_triggered(env: &Env, invoice_id: u64, released_at: u64) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("auto_rel"), invoice_id),
+        released_at,
+    );
+}
+
+/// Issue #811: an invoice was created depending on another invoice, which
+/// must be Released before this one can be.
+/// Topics: (split, dep_link, invoice_id)
+/// Data: prerequisite invoice id
+pub fn invoice_dependency_linked(env: &Env, invoice_id: u64, prerequisite_id: u64) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("dep_link"), invoice_id),
+        prerequisite_id,
+    );
+}
+
+/// Issue #805: an invoice was treated as fully funded because its total paid
+/// fell within the configured variance tolerance below the target.
+/// Topics: (split, var_fund, invoice_id)
+/// Data: (funded, target)
+pub fn fully_funded_with_variance(env: &Env, invoice_id: u64, funded: i128, target: i128) {
+    env.events().publish(
+        (
+            symbol_short!("split"),
+            symbol_short!("var_fund"),
+            invoice_id,
+        ),
+        (funded, target),
+    );
+}
+
+/// Issue #806: a recipient vetoed an invoice's release.
+/// Topics: (split, veto, invoice_id)
+/// Data: recipient
+pub fn release_vetoed(env: &Env, invoice_id: u64, recipient: &Address) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("veto"), invoice_id),
+        recipient.clone(),
+    );
+}
+
+/// Issue #806: a recipient cleared their veto on an invoice's release.
+/// Topics: (split, veto_clr, invoice_id)
+/// Data: recipient
+pub fn release_veto_cleared(env: &Env, invoice_id: u64, recipient: &Address) {
+    env.events().publish(
+        (
+            symbol_short!("split"),
+            symbol_short!("veto_clr"),
+            invoice_id,
+        ),
+        recipient.clone(),
+    );
+}
 
 #[cfg(test)]
 mod tests {
