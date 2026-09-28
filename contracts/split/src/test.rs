@@ -12,7 +12,7 @@ use types::InvoiceOptions;
 // Test helpers
 // ---------------------------------------------------------------------------
 
-fn setup_initialized() -> (Env, Address, Address) {
+pub(crate) fn setup_initialized() -> (Env, Address, Address) {
     let (env, contract_id, token_id) = setup();
     init_contract(&env, &contract_id, &token_id);
     (env, contract_id, token_id)
@@ -41,7 +41,7 @@ fn token_client<'a>(env: &'a Env, token_id: &Address) -> TokenClient<'a> {
     TokenClient::new(env, token_id)
 }
 
-fn default_options(env: &Env) -> InvoiceOptions {
+pub(crate) fn default_options(env: &Env) -> InvoiceOptions {
     InvoiceOptions {
         co_creators: Vec::new(env),
         allow_early_withdrawal: false,
