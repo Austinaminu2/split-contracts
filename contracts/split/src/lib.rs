@@ -62,6 +62,9 @@ mod test;
 mod fuzz_tests;
 
 #[cfg(test)]
+mod test_market_features;
+
+#[cfg(test)]
 mod storage_snapshot;
 
 mod storage_keys;
@@ -69,6 +72,12 @@ mod storage_keys;
 mod migrations;
 
 mod validation;
+
+// Issues #857–#860: feature modules, each with its own `#[contractimpl]` block.
+mod dynamic_fee;
+mod earnings_insurance;
+mod invoice_links;
+mod liquidity_pool;
 
 use error::ContractError;
 use soroban_sdk::crypto::bls12_381::{Fr, G1Affine};

@@ -192,3 +192,17 @@ Run tests with:
 ```sh
 cargo test --lib storage_keys
 ```
+
+## Feature-module Keys (issues #857–#860)
+
+These keys are defined as `Symbol`-prefixed tuples inside their feature modules.
+
+| Key | Tier | Module | Value | Purpose |
+|-----|------|--------|-------|---------|
+| `("cl_pool", creator, token)` | persistent | `liquidity_pool.rs` | `CreatorPool` | Creator liquidity pool state (#860) |
+| `("cl_lpsh", creator, token, provider)` | persistent | `liquidity_pool.rs` | `i128` | LP shares held by a provider (#860) |
+| `("xlinks", invoice_id)` | persistent | `invoice_links.rs` | `Vec<ExternalInvoiceLink>` | Cross-contract invoice links (#859) |
+| `("ei_pool", token)` | persistent | `earnings_insurance.rs` | `EarningsInsurancePool` | Per-token earnings insurance pool (#858) |
+| `("ei_pol", invoice_id, recipient)` | persistent | `earnings_insurance.rs` | `EarningsPolicy` | Recipient earnings policy (#858) |
+| `"dyn_fee"` | instance | `dynamic_fee.rs` | `DynamicFeeConfig` | Dynamic fee curve (#857) |
+| `"mkt_cond"` | instance | `dynamic_fee.rs` | `MarketConditions` | Last reported market conditions (#857) |

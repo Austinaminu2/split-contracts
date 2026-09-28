@@ -1664,3 +1664,169 @@ pub fn recipient_share_unlocked(
         (recipient.clone(), admin.clone()),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #860: Creator liquidity pool events
+// ---------------------------------------------------------------------------
+
+/// Topics: (pool, deposit, creator) — Data: (provider, token, amount, shares_minted)
+pub fn pool_deposited(
+    env: &Env,
+    creator: &Address,
+    provider: &Address,
+    token: &Address,
+    amount: i128,
+    shares: i128,
+) {
+    env.events().publish(
+        (symbol_short!("pool"), symbol_short!("deposit"), creator.clone()),
+        (provider.clone(), token.clone(), amount, shares),
+    );
+}
+
+/// Topics: (pool, withdraw, creator) — Data: (provider, token, amount, shares_burned)
+pub fn pool_withdrawn(
+    env: &Env,
+    creator: &Address,
+    provider: &Address,
+    token: &Address,
+    amount: i128,
+    shares: i128,
+) {
+    env.events().publish(
+        (symbol_short!("pool"), symbol_short!("withdraw"), creator.clone()),
+        (provider.clone(), token.clone(), amount, shares),
+    );
+}
+
+/// Topics: (pool, draw, creator) — Data: (token, amount, outstanding)
+pub fn pool_drawn(env: &Env, creator: &Address, token: &Address, amount: i128, outstanding: i128) {
+    env.events().publish(
+        (symbol_short!("pool"), symbol_short!("draw"), creator.clone()),
+        (token.clone(), amount, outstanding),
+    );
+}
+
+/// Topics: (pool, repay, creator) — Data: (token, principal, fee, outstanding)
+pub fn pool_repaid(
+    env: &Env,
+    creator: &Address,
+    token: &Address,
+    principal: i128,
+    fee: i128,
+    outstanding: i128,
+) {
+    env.events().publish(
+        (symbol_short!("pool"), symbol_short!("repay"), creator.clone()),
+        (token.clone(), principal, fee, outstanding),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #859: Cross-contract invoice link events
+// ---------------------------------------------------------------------------
+
+/// Topics: (split, xlink, invoice_id) — Data: (remote_contract, remote_invoice_id)
+pub fn external_link_added(env: &Env, invoice_id: u64, remote: &Address, remote_id: u64) {
+    let event_seq = next_seq(env, invoice_id);
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("xlink"), invoice_id),
+        (remote.clone(), remote_id, event_seq),
+    );
+}
+
+/// Topics: (split, xunlink, invoice_id) — Data: (remote_contract, remote_invoice_id)
+pub fn external_link_removed(env: &Env, invoice_id: u64, remote: &Address, remote_id: u64) {
+    let event_seq = next_seq(env, invoice_id);
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("xunlink"), invoice_id),
+        (remote.clone(), remote_id, event_seq),
+    );
+}
+
+/// Topics: (split, xlink_ok, invoice_id) — Data: (remote_contract, remote_invoice_id, verified)
+pub fn external_link_verified(
+    env: &Env,
+    invoice_id: u64,
+    remote: &Address,
+    remote_id: u64,
+    verified: bool,
+) {
+    let event_seq = next_seq(env, invoice_id);
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("xlink_ok"), invoice_id),
+        (remote.clone(), remote_id, verified, event_seq),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #858: Recipient earnings insurance events
+// ---------------------------------------------------------------------------
+
+/// Topics: (ei, config, token) — Data: premium_bps
+pub fn earnings_insurance_configured(env: &Env, token: &Address, premium_bps: u32) {
+    env.events().publish(
+        (symbol_short!("ei"), symbol_short!("config"), token.clone()),
+        premium_bps,
+    );
+}
+
+/// Topics: (ei, funded, token) — Data: (funder, amount, capital)
+pub fn earnings_insurance_funded(env: &Env, token: &Address, funder: &Address, amount: i128, capital: i128) {
+    env.events().publish(
+        (symbol_short!("ei"), symbol_short!("funded"), token.clone()),
+        (funder.clone(), amount, capital),
+    );
+}
+
+/// Topics: (ei, withdrawn, token) — Data: (to, amount, capital)
+pub fn earnings_insurance_withdrawn(env: &Env, token: &Address, to: &Address, amount: i128, capital: i128) {
+    env.events().publish(
+        (symbol_short!("ei"), symbol_short!("withdrawn"), token.clone()),
+        (to.clone(), amount, capital),
+    );
+}
+
+/// Topics: (ei, bought, invoice_id) — Data: (recipient, coverage, premium)
+pub fn earnings_policy_bought(env: &Env, invoice_id: u64, recipient: &Address, coverage: i128, premium: i128) {
+    env.events().publish(
+        (symbol_short!("ei"), symbol_short!("bought"), invoice_id),
+        (recipient.clone(), coverage, premium),
+    );
+}
+
+/// Topics: (ei, claimed, invoice_id) — Data: (recipient, payout)
+pub fn earnings_policy_claimed(env: &Env, invoice_id: u64, recipient: &Address, payout: i128) {
+    env.events().publish(
+        (symbol_short!("ei"), symbol_short!("claimed"), invoice_id),
+        (recipient.clone(), payout),
+    );
+}
+
+/// Topics: (ei, settled, invoice_id) — Data: (recipient, released_reserve)
+pub fn earnings_policy_settled(env: &Env, invoice_id: u64, recipient: &Address, released: i128) {
+    env.events().publish(
+        (symbol_short!("ei"), symbol_short!("settled"), invoice_id),
+        (recipient.clone(), released),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #857: Dynamic fee events
+// ---------------------------------------------------------------------------
+
+/// Topics: (dyn_fee, config) — Data: (base_bps, min_bps, max_bps)
+pub fn dynamic_fee_configured(env: &Env, base_bps: u32, min_bps: u32, max_bps: u32) {
+    env.events().publish(
+        (symbol_short!("dyn_fee"), symbol_short!("config")),
+        (base_bps, min_bps, max_bps),
+    );
+}
+
+/// Topics: (dyn_fee, adjusted) — Data: (old_bps, new_bps, volume, volatility_bps)
+pub fn dynamic_fee_adjusted(env: &Env, old_bps: u32, new_bps: u32, volume: i128, volatility_bps: u32) {
+    env.events().publish(
+        (symbol_short!("dyn_fee"), symbol_short!("adjusted")),
+        (old_bps, new_bps, volume, volatility_bps),
+    );
+}

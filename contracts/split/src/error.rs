@@ -118,4 +118,32 @@ pub enum ContractError {
     RecipientNotFound = 62,
     /// Issue #522: Parent chain depth exceeds the allowed maximum.
     ParentChainTooDeep = 63,
+    /// Issue #860: Creator liquidity pool has insufficient available liquidity.
+    PoolInsufficientLiquidity = 64,
+    /// Issue #860: Liquidity provider holds fewer pool shares than requested.
+    InsufficientPoolShares = 65,
+    /// Issue #860: Repayment exceeds the creator's outstanding pool draw.
+    RepaymentExceedsDebt = 66,
+    /// Issue #859: Invoice already has the maximum number of cross-contract links.
+    LinkLimitReached = 67,
+    /// Issue #859: The cross-contract link already exists.
+    LinkAlreadyExists = 68,
+    /// Issue #859: The cross-contract link does not exist.
+    LinkNotFound = 69,
+    /// Issue #859: A link may not point at the invoice itself.
+    InvalidLink = 70,
+    /// Issue #858: Recipient already holds an earnings insurance policy for this invoice.
+    PolicyAlreadyExists = 71,
+    /// Issue #858: No earnings insurance policy found.
+    PolicyNotFound = 72,
+    /// Issue #858: The policy cannot be claimed or settled in the invoice's current state.
+    PolicyNotClaimable = 73,
+    /// Issue #858: The insurance pool lacks free capital to underwrite the coverage.
+    InsuranceCapacityExceeded = 74,
+    /// Issue #858: Earnings insurance is not configured for this token.
+    InsuranceNotConfigured = 75,
+    /// Issue #857: Dynamic fee configuration is invalid.
+    InvalidFeeConfig = 76,
+    /// Issue #857: Dynamic fee adjustment has not been configured.
+    DynamicFeeNotConfigured = 77,
 }

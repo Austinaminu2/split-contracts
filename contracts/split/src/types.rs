@@ -1666,3 +1666,114 @@ pub struct RecipientShare {
     pub locked: bool,
 }
 
+
+// ---------------------------------------------------------------------------
+// Issue #860: Creator liquidity pool
+// ---------------------------------------------------------------------------
+
+/// Per-(creator, token) liquidity pool. Liquidity providers deposit tokens and
+/// receive shares; the creator may draw liquidity against the pool and repays
+/// it with a fee that accrues to share holders.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreatorPool {
+    pub creator: Address,
+    pub token: Address,
+    /// Tokens currently held by the contract for this pool (withdrawable / drawable).
+    pub available: i128,
+    /// Tokens drawn by the creator that have not yet been repaid.
+    pub outstanding: i128,
+    /// Total LP shares in issue.
+    pub total_shares: i128,
+    /// Cumulative fees paid into the pool by the creator.
+    pub fees_earned: i128,
+}
+
+// ---------------------------------------------------------------------------
+// Issue #859: Cross-contract invoice linking
+// ---------------------------------------------------------------------------
+
+/// A link from a local invoice to an invoice held by another (or this) contract.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExternalInvoiceLink {
+    pub remote_contract: Address,
+    pub remote_invoice_id: u64,
+    /// Set once `verify_external_link` confirmed the remote invoice exists.
+    pub verified: bool,
+    /// Remote invoice status observed at the last successful verification.
+    pub remote_status: Option<InvoiceStatus>,
+    pub linked_at: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Issue #858: Recipient earnings insurance
+// ---------------------------------------------------------------------------
+
+/// Per-token earnings insurance pool.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EarningsInsurancePool {
+    pub token: Address,
+    /// Premium charged on coverage, in basis points.
+    pub premium_bps: u32,
+    /// Total capital held by the pool (underwriting capital + premiums − payouts).
+    pub capital: i128,
+    /// Capital reserved against active policies.
+    pub reserved: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EarningsPolicyStatus {
+    Active,
+    Claimed,
+    Settled,
+}
+
+/// An earnings insurance policy bought by a recipient for a single invoice.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EarningsPolicy {
+    pub invoice_id: u64,
+    pub recipient: Address,
+    pub token: Address,
+    pub coverage: i128,
+    pub premium: i128,
+    pub status: EarningsPolicyStatus,
+}
+
+// ---------------------------------------------------------------------------
+// Issue #857: Dynamic fee adjustment
+// ---------------------------------------------------------------------------
+
+/// Parameters controlling how the platform fee reacts to market conditions.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DynamicFeeConfig {
+    /// Fee applied when volume is exactly on target and volatility is zero.
+    pub base_bps: u32,
+    pub min_bps: u32,
+    pub max_bps: u32,
+    /// Expected payment volume per reporting period.
+    pub target_volume: i128,
+    /// Fee change (bps) applied per 100% deviation of volume from target.
+    pub volume_sensitivity_bps: u32,
+    /// Fee change (bps) applied per 100% (10 000 bps) of reported volatility.
+    pub volatility_sensitivity_bps: u32,
+    /// Maximum change of the live fee per update, in bps (0 = unlimited).
+    pub max_step_bps: u32,
+    /// Address permitted to report market conditions (besides the admin).
+    pub reporter: Address,
+}
+
+/// Most recent market conditions reported to the contract.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarketConditions {
+    pub volume: i128,
+    pub volatility_bps: u32,
+    pub reported_at: u64,
+    /// Fee (bps) in force after this report was applied.
+    pub applied_fee_bps: u32,
+}
