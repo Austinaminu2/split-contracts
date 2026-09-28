@@ -1750,6 +1750,12 @@ fn total_released_bps_key(invoice_id: u64) -> (Symbol, u64) {
 /// Target ledger count for instance-storage TTL extension (~30 days at 5 s/ledger).
 const INVOICE_HOT_TTL_LEDGERS: u32 = 518_400;
 
+/// Issue #770: ledgers added to an invoice's storage TTL by `bump_invoice_ttl`.
+///
+/// 1,000,000 ledgers at ~5 seconds per ledger is about 5,000,000 seconds, or
+/// roughly 57.9 days.
+pub const TTL_EXTENSION_LEDGERS: u32 = 1_000_000;
+
 /// Extend the contract instance TTL so all `InvoiceHot` entries remain live.
 ///
 /// Because every `InvoiceHot` entry lives in the *instance* bucket, one call
@@ -5432,6 +5438,7 @@ impl SplitContract {
         // invoice once `_create_invoice_inner` has allocated its id.
         let cosigners = options.cosigners.clone();
         let cosigner_threshold = options.cosigner_threshold;
+        let tiers = options.ext.tiers.clone();
 
         // Issue #753: if payment_token override is set, use it as funding_token.
         let payment_token_override = options.ext.payment_token.clone();
@@ -5613,6 +5620,7 @@ impl SplitContract {
         // See `create_invoice` — captured before `options` is consumed.
         let cosigners = options.cosigners.clone();
         let cosigner_threshold = options.cosigner_threshold;
+        let tiers = options.ext.tiers.clone();
 
         let id = Self::_create_invoice_inner(
             &env,
@@ -8515,6 +8523,7 @@ impl SplitContract {
             );
         }
         check_and_emit_funding_checkpoints(env, invoice_id, invoice.funded, total);
+        tiers_ext::check_tiers(env, invoice_id, invoice.funded, total);
         update_creator_stats_on_payment(env, &invoice.creator, credited_amount);
         update_creator_payers(env, &invoice.creator, payer);
         notify_invoice(
@@ -9112,6 +9121,7 @@ impl SplitContract {
         }
         env.storage().temporary().set(&re_key, &true);
         // ------------------------------------------------
+        delegate_ext::reject_delegate(&env, invoice_id, &caller);
         Self::_release_invoice_inner(&env, caller, invoice_id, preimage);
         env.storage().temporary().remove(&reentrancy_lock_key());
     }
@@ -9858,7 +9868,9 @@ impl SplitContract {
 
         let mut invoice = load_invoice(&env, invoice_id);
         assert!(
-            invoice.creator == creator || invoice.co_creators.iter().any(|c| c == creator),
+            invoice.creator == creator
+                || invoice.co_creators.iter().any(|c| c == creator)
+                || delegate_ext::is_delegate_of(&env, invoice_id, &creator),
             "only creator can pause invoice"
         );
         assert!(
@@ -9887,7 +9899,9 @@ impl SplitContract {
 
         let mut invoice = load_invoice(&env, invoice_id);
         assert!(
-            invoice.creator == creator || invoice.co_creators.iter().any(|c| c == creator),
+            invoice.creator == creator
+                || invoice.co_creators.iter().any(|c| c == creator)
+                || delegate_ext::is_delegate_of(&env, invoice_id, &creator),
             "only creator can resume invoice"
         );
         assert!(invoice.frozen, "invoice is not frozen");
@@ -13336,6 +13350,7 @@ impl SplitContract {
         // ------------------------------------------------
         require_not_paused(&env);
         caller.require_auth();
+        delegate_ext::reject_delegate(&env, invoice_id, &caller);
 
         let mut invoice = load_invoice(&env, invoice_id);
 
@@ -17725,35 +17740,6 @@ impl SplitContract {
             .persistent()
             .get(&template_id_key(&creator, template_id))
             .expect("template not found")
-    }
-
-    /// Issue #563: Extend the TTL of a live invoice.
-    ///
-    /// Callable by any address. Bumps the TTL of all DataKey entries associated
-    /// with the invoice to the maximum allowed duration, preventing silent
-    /// expiration during long-running campaigns or dispute periods.
-    pub fn bump_invoice_ttl(env: Env, invoice_id: u64) {
-        let _invoice = load_invoice(&env, invoice_id);
-
-        // Bump TTL for all known invoice keys
-        let min_ttl = constants::MIN_INVOICE_TTL_LEDGERS;
-        let max_ttl = constants::MAX_INVOICE_TTL_LEDGERS;
-
-        use storage_keys::InvoiceKey;
-        let keys = [
-            InvoiceKey::Invoice(invoice_id),
-            InvoiceKey::InvoiceExt(invoice_id),
-            InvoiceKey::InvoiceExt2(invoice_id),
-            InvoiceKey::RecipientsList(invoice_id),
-            InvoiceKey::AmountsList(invoice_id),
-            InvoiceKey::PaidFlags(invoice_id),
-        ];
-
-        for key in &keys {
-            env.storage()
-                .persistent()
-                .extend_ttl(key, min_ttl, max_ttl);
-        }
     }
 
     /// #522 — Walk the parent chain and verify:

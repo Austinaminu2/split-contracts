@@ -33,7 +33,7 @@ fn setup() -> (Env, Address, Address) {
     (env, contract_id, token_id)
 }
 
-fn client<'a>(env: &'a Env, contract_id: &Address) -> SplitContractClient<'a> {
+pub(crate) fn client<'a>(env: &'a Env, contract_id: &Address) -> SplitContractClient<'a> {
     SplitContractClient::new(env, contract_id)
 }
 
@@ -162,7 +162,7 @@ fn single_recipient_invoice(
 }
 
 /// Create a basic single-recipient invoice with default optional params.
-fn make_invoice(
+pub(crate) fn make_invoice(
     env: &Env,
     c: &SplitContractClient,
     creator: &Address,
