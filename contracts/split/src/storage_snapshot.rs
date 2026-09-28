@@ -41,6 +41,10 @@ fn storage_key_snapshot() {
     keys.push(("paused_key", hex_xdr(&env, paused_key())));
     keys.push(("paused_fns_key", hex_xdr(&env, paused_fns_key())));
     keys.push(("treasury_key", hex_xdr(&env, treasury_key())));
+    keys.push((
+        "treasury_balance_key",
+        hex_xdr(&env, treasury_balance_key()),
+    ));
     keys.push(("usdc_token_key", hex_xdr(&env, usdc_token_key())));
     keys.push(("creation_fee_key", hex_xdr(&env, creation_fee_key())));
     keys.push((
@@ -289,6 +293,12 @@ fn storage_key_snapshot() {
     keys.push(("cosigners_key", hex_xdr(&env, cosigners_key(1))));
     keys.push(("cosigner_thresh_key", hex_xdr(&env, cosigner_thresh_key(1))));
     keys.push(("cosign_key", hex_xdr(&env, cosign_key(1))));
+
+    // Issue #747: per-payer contribution cap running total (Symbol, u64, Address)
+    keys.push(("payer_cap_total_key", hex_xdr(&env, payer_cap_total_key(1, &a))));
+
+    // Issue #746: per-invoice cumulative released basis points (Symbol, u64)
+    keys.push(("total_released_bps_key", hex_xdr(&env, total_released_bps_key(1))));
 
     // Sort by key name for deterministic output
     keys.sort_by(|a, b| a.0.cmp(b.0));

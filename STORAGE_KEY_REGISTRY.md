@@ -179,6 +179,25 @@ pub fn upgrade(env: Env) {
 }
 ```
 
+## Additional key helpers (issues #748–#751)
+
+Newer entry points declare their keys through standalone helper functions in
+`contracts/split/src/lib.rs` rather than `StorageKey` variants. The keys added
+by issues #748–#751 are:
+
+| Key helper | XDR value | Tier | Value type | Purpose |
+|------------|-----------|------|------------|---------|
+| `treasury_balance_key()` | `0000000f000000077472735f62616c00` (`trs_bal`) | instance | `i128` | Issue #751: protocol fees withheld from payments, awaiting `withdraw_treasury` |
+
+The remaining functionality in this group introduces no new storage keys:
+
+- **#748** (templates with overrides) reuses `Template(creator, name)`,
+  `TemplateVersion(creator, name, version)` and `TemplateVersionCount(creator, name)`.
+- **#749** (payer whitelist) reuses the per-invoice `InvoiceExt` entry, where
+  `allowed_payers` already lives.
+- **#750** (clone lineage) reuses the per-invoice `parent_invoice_id` /
+  `clone_depth` fields; `get_lineage` is a pure read that walks them.
+
 ## Uniqueness Validation
 
 Unit tests in `storage_keys.rs` verify that:

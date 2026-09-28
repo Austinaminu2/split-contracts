@@ -145,19 +145,13 @@ pub enum ContractError {
     AlreadyPaid = 65,
     /// Recipient list is shorter than the configured minimum recipient count.
     TooFewRecipients = 66,
-    /// Issue #768: Attestation statement exceeds the 256-byte maximum.
-    AttestationStatementTooLong = 67,
-    /// Issue #768: Invoice already holds the maximum of 5 attestations.
-    AttestationLimitReached = 68,
-    /// Issue #768: No attestation from this attester exists on the invoice.
-    AttestationNotFound = 69,
-    /// Issue #769: Delegate callers may not perform this creator-only operation.
-    DelegateNotAuthorised = 70,
-    /// Issue #769: Invoice already has the maximum of 3 delegates.
-    DelegateLimitReached = 71,
-    /// Issue #770: Invoice is in a terminal status and its TTL cannot be bumped.
-    InvoiceTerminated = 72,
-    /// Issue #771: Funding tiers are invalid (more than 4, thresholds not
-    /// strictly increasing within 1..=10_000, or reward description over 64 bytes).
-    InvalidFundingTiers = 73,
+    /// Issue #747: Payment would push a payer's running total past the per-payer
+    /// contribution cap (`max_contribution_per_payer`) set on the invoice.
+    ContributionCapExceeded = 67,
+    /// Issue #746: Basis points value is out of the valid range (1–10 000).
+    InvalidBps = 68,
+    /// Issue #744: Batch size exceeds the hard cap of 20 invoices per call.
+    BatchTooLarge = 69,
+    /// Issue #745: The invoice has already been expired and all payers refunded.
+    InvoiceExpired = 70,
 }
