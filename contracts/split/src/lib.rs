@@ -217,6 +217,40 @@ fn recipient_whitelist_key(id: u64) -> (Symbol, u64) {
 fn funded_at_ledger_key(id: u64) -> (Symbol, u64) {
     (symbol_short!("fund_led"), id)
 }
+/// Issue #809: auto-release condition set on an invoice.
+fn auto_release_condition_key(id: u64) -> (Symbol, u64) {
+    (symbol_short!("auto_cnd"), id)
+}
+/// Issue #810: aggregate performance metrics for a recipient.
+fn recipient_metrics_key(recipient: &Address) -> (Symbol, Address) {
+    (symbol_short!("rcp_met"), recipient.clone())
+}
+
+/// Issue #809: whether the invoice's auto-release condition (if any) is met.
+/// `None` when no condition is set.
+fn auto_release_condition_met(env: &Env, invoice_id: u64) -> Option<bool> {
+    env.storage()
+        .persistent()
+        .get::<_, AutoReleaseCondition>(&auto_release_condition_key(invoice_id))
+        .map(|condition| match condition {
+            AutoReleaseCondition::AtTimestamp(at) => env.ledger().timestamp() >= at,
+        })
+}
+
+/// Issue #810: count one more released invoice for each distinct recipient.
+fn record_recipient_release(env: &Env, recipients: &Vec<Address>) {
+    let mut seen: Vec<Address> = Vec::new(env);
+    for recipient in recipients.iter() {
+        if seen.contains(&recipient) {
+            continue;
+        }
+        seen.push_back(recipient.clone());
+        let key = recipient_metrics_key(&recipient);
+        let mut metrics: RecipientMetrics = env.storage().persistent().get(&key).unwrap_or_default();
+        metrics.invoices_received_count = metrics.invoices_received_count.saturating_add(1);
+        env.storage().persistent().set(&key, &metrics);
+    }
+}
 /// Issue #329: off-chain metadata hash for an invoice.
 fn metadata_hash_key(id: u64) -> (Symbol, u64) {
     (symbol_short!("meta_hsh"), id)
@@ -6222,6 +6256,9 @@ impl SplitContract {
         }
 
         events::invoice_created(env, id, &creator, total, &invoice.cross_chain_ref);
+        if let Some(prereq_id) = invoice.prerequisite_id {
+            events::invoice_dependency_linked(env, id, prereq_id);
+        }
         if let Some(ref addr) = invoice.forward_to {
             events::forward_configured(env, id, addr);
         }
@@ -8467,7 +8504,9 @@ impl SplitContract {
                 || invoice.held_until.is_some()
                 || invoice
                     .scheduled_release_at
-                    .is_some_and(|t| env.ledger().timestamp() < t);
+                    .is_some_and(|t| env.ledger().timestamp() < t)
+                // Issue #809: hold funds until the auto-release condition is met.
+                || auto_release_condition_met(env, invoice_id) == Some(false);
             // Issue #327: record the ledger sequence when full funding is reached.
             if !env
                 .storage()
@@ -9301,6 +9340,85 @@ impl SplitContract {
         Self::_release(&env, invoice_id, &mut invoice, &caller);
     }
 
+    /// Issue #809: set the condition under which anyone may release this
+    /// invoice via [`Self::trigger_auto_release`]. Creator-only, while Pending.
+    /// Until the condition is met, full funding holds the funds instead of
+    /// releasing them immediately.
+    pub fn set_auto_release_condition(
+        env: Env,
+        creator: Address,
+        invoice_id: u64,
+        condition: AutoReleaseCondition,
+    ) {
+        require_not_paused(&env);
+        creator.require_auth();
+        let invoice = load_invoice(&env, invoice_id);
+        assert!(invoice.creator == creator, "only creator");
+        assert!(
+            invoice.status == InvoiceStatus::Pending,
+            "invoice is not pending"
+        );
+        match condition {
+            AutoReleaseCondition::AtTimestamp(at) => assert!(
+                at > env.ledger().timestamp(),
+                "auto-release time must be in the future"
+            ),
+        }
+        env.storage()
+            .persistent()
+            .set(&auto_release_condition_key(invoice_id), &condition);
+    }
+
+    /// Issue #809: the invoice's auto-release condition, if one is set.
+    pub fn get_auto_release_condition(env: Env, invoice_id: u64) -> Option<AutoReleaseCondition> {
+        env.storage()
+            .persistent()
+            .get(&auto_release_condition_key(invoice_id))
+    }
+
+    /// Issue #809: release an invoice whose auto-release condition is met.
+    /// Callable by anyone; every other release guard (approval, prerequisite,
+    /// co-signers, ...) still applies. Emits `AutoReleaseTriggered`.
+    pub fn trigger_auto_release(env: Env, invoice_id: u64) {
+        let met = auto_release_condition_met(&env, invoice_id).expect("no auto-release condition");
+        assert!(met, "auto-release condition not met");
+        Self::release_invoice(env.clone(), env.current_contract_address(), invoice_id, None);
+        env.storage()
+            .persistent()
+            .remove(&auto_release_condition_key(invoice_id));
+        events::auto_release_triggered(&env, invoice_id, env.ledger().timestamp());
+    }
+
+    /// Issue #810: aggregate performance metrics for a recipient (zeroed if
+    /// the address has never been paid out).
+    pub fn get_recipient_metrics(env: Env, recipient: Address) -> RecipientMetrics {
+        env.storage()
+            .persistent()
+            .get(&recipient_metrics_key(&recipient))
+            .unwrap_or_default()
+    }
+
+    /// Issue #811: the invoice this invoice depends on, if any. The dependency
+    /// must be Released before this invoice can be released.
+    pub fn get_invoice_dependency(env: Env, invoice_id: u64) -> Option<u64> {
+        load_invoice(&env, invoice_id).prerequisite_id
+    }
+
+    /// Issue #812: read-only snapshot of contract-level configuration, for
+    /// backup and for checking a migrated deployment against its source.
+    pub fn export_config_snapshot(env: Env) -> ConfigSnapshot {
+        let instance = env.storage().instance();
+        ConfigSnapshot {
+            admin: instance.get(&admin_key()),
+            treasury: instance.get(&treasury_key()),
+            usdc_token: instance.get(&usdc_token_key()),
+            paused: is_paused(&env),
+            platform_fee_bps: instance.get(&platform_fee_bps_key()).unwrap_or(0u32),
+            invoice_count: env.storage().persistent().get(&counter_key()).unwrap_or(0u64),
+            schema_version: migrations::schema_version(&env),
+        }
+    }
+
     /// Lock a recipient's share for an invoice (admin-only).
     /// Locked recipients are skipped during release and their share is accumulated
     /// in `UnreleasedFunds`. Returns `RecipientNotFound` if the recipient is not in
@@ -9391,10 +9509,15 @@ impl SplitContract {
         if invoice.status == InvoiceStatus::Disputed {
             panic!("{}", ContractError::InvoiceDisputed as u32);
         }
+        let was_released = invoice.status == InvoiceStatus::Released;
         if invoice.tranches.is_empty() {
             Self::_release_full(env, invoice_id, invoice, actor);
         } else {
             Self::_release_tranches(env, invoice_id, invoice, actor);
+        }
+        // Issue #810: update recipient metrics once, when the invoice becomes Released.
+        if !was_released && invoice.status == InvoiceStatus::Released {
+            record_recipient_release(env, &invoice.recipients);
         }
     }
 

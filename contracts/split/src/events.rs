@@ -2085,6 +2085,28 @@ pub fn batch_created(env: &Env, creator: &Address, invoice_ids: &Vec<u64>, count
 // Unit tests for the per-invoice event sequence counter (issue #708)
 // ---------------------------------------------------------------------------
 
+/// Issue #809: an invoice was released by `trigger_auto_release` after its
+/// auto-release condition was met.
+/// Topics: (split, auto_rel, invoice_id)
+/// Data: ledger timestamp at release
+pub fn auto_release_triggered(env: &Env, invoice_id: u64, released_at: u64) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("auto_rel"), invoice_id),
+        released_at,
+    );
+}
+
+/// Issue #811: an invoice was created depending on another invoice, which
+/// must be Released before this one can be.
+/// Topics: (split, dep_link, invoice_id)
+/// Data: prerequisite invoice id
+pub fn invoice_dependency_linked(env: &Env, invoice_id: u64, prerequisite_id: u64) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("dep_link"), invoice_id),
+        prerequisite_id,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

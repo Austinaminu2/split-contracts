@@ -1990,6 +1990,38 @@ pub struct PaymentRecord {
     pub ledger: u32,
 }
 
+/// Issue #809: condition under which anyone may release an invoice through
+/// `trigger_auto_release`, without a manual `release` call by the creator.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AutoReleaseCondition {
+    /// Releasable once the ledger timestamp reaches this value (unix seconds).
+    AtTimestamp(u64),
+}
+
+/// Issue #810: aggregate on-chain performance metrics for a recipient.
+#[contracttype]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RecipientMetrics {
+    /// Number of released invoices that listed this address as a recipient.
+    pub invoices_received_count: u32,
+}
+
+/// Issue #812: point-in-time export of contract-level configuration, for
+/// backup and for checking a migrated deployment against its source.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfigSnapshot {
+    pub admin: Option<Address>,
+    pub treasury: Option<Address>,
+    pub usdc_token: Option<Address>,
+    pub paused: bool,
+    pub platform_fee_bps: u32,
+    /// Highest invoice id assigned so far.
+    pub invoice_count: u64,
+    pub schema_version: u32,
+}
+
 
 #[cfg(test)]
 mod tests {
