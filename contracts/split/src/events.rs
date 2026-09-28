@@ -27,7 +27,7 @@
 
 use crate::storage_keys::ev_seq_key;
 use crate::types::{DisputeOutcome, FeeSplit, InvoicePhase, InvoiceStatus, OverfundingPolicy, RepScore, TimelockAction};
-use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, String, Symbol, Vec};
 
 // ---------------------------------------------------------------------------
 // Event sequence helper (per-invoice, temporary-storage counter)
@@ -1041,6 +1041,11 @@ pub fn fee_recipients_updated(env: &Env, recipients: &Vec<FeeSplit>) {
 ///
 /// Topics: (split, fee_paid, invoice_id)
 /// Data: (amount, treasury, ledger)
+///
+/// Issue #751 moved protocol-fee collection to payment time (see
+/// `protocol_fee_charged`), so this event is retained only for indexers that
+/// still subscribe to the historical release-time fee.
+#[allow(dead_code)]
 pub fn fee_paid(env: &Env, invoice_id: u64, amount: i128, treasury: &Address) {
     env.events().publish(
         (

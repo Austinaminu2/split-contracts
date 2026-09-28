@@ -1035,7 +1035,6 @@ fn test_unpause_restores_pay() {
 }
 
 #[test]
-#[should_panic(expected = "payer not allowed")]
 fn test_allowed_payers_unlisted_address_rejected() {
     let (env, contract_id, token_id) = setup_initialized();
     let c = client(&env, &contract_id);
@@ -1059,7 +1058,13 @@ fn test_allowed_payers_unlisted_address_rejected() {
     a.push_back(200_i128);
     let id = c.create_invoice(&creator, &r, &a, &token_id, &9_999_u64, &opts);
 
-    c.pay(&unlisted, &id, &200_i128, &0_u64, &false, &false, &None);
+    // Issue #749: rejection is reported as a typed error.
+    let res = c.try_pay(&unlisted, &id, &200_i128, &0_u64, &false, &false, &None);
+    assert_eq!(
+        res,
+        Err(Ok(ContractError::PayerNotWhitelisted.into())),
+        "unlisted payer must be rejected with PayerNotWhitelisted"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -7151,7 +7156,6 @@ fn test_multisig_release_panics_below_threshold() {
 }
 
 #[test]
-#[should_panic(expected = "payer not allowed")]
 fn test_309_blocked_payer_rejected() {
     let (env, contract_id, token_id) = setup_initialized();
     let c = client(&env, &contract_id);
@@ -7175,8 +7179,9 @@ fn test_309_blocked_payer_rejected() {
     amounts.push_back(500_i128);
     let id = c.create_invoice(&creator, &recipients, &amounts, &token_id, &9_999_u64, &opts);
 
-    // Blocked payer should be rejected.
-    c.pay(&blocked_payer, &id, &500_i128, &0_u64, &false, &false, &None);
+    // Blocked payer should be rejected with a typed error (Issue #749).
+    let res = c.try_pay(&blocked_payer, &id, &500_i128, &0_u64, &false, &false, &None);
+    assert_eq!(res, Err(Ok(ContractError::PayerNotWhitelisted.into())));
 }
 
 #[test]
