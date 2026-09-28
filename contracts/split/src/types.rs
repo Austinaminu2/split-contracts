@@ -130,6 +130,21 @@ pub struct RebateTier {
     pub rebate_bps: u32,
 }
 
+/// Issue #815: Filtered creator earnings aggregate returned by
+/// `get_creator_earnings`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreatorEarnings {
+    /// Number of matching invoices in the scanned range.
+    pub invoice_count: u32,
+    /// Sum of the target amounts of matching invoices.
+    pub total_amount: i128,
+    /// Sum of the funded amounts of matching invoices.
+    pub total_funded: i128,
+    /// Sum of funded amounts on matching Released invoices.
+    pub total_released: i128,
+}
+
 /// Issue #299: Per-creator analytics aggregator.
 #[contracttype]
 #[derive(Clone, Debug)]

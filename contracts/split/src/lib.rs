@@ -112,6 +112,7 @@ const MAX_PARENT_DEPTH: u32 = 10;
 const MAX_PAYER_WHITELIST: u32 = 50;
 
 use types::{
+    CreatorEarnings,
     AdminAction, AdminRole, AdminSet, AuditEntry, Bid, CircuitBreakerStatus,
     CloneOverrides, CompactInvoice, CompactMigrateResult, CompletionProof, ComputeEstimate,
     ConfidentialPayment, ContributionResult, CreateInvoiceParams, CreatorStats, DelayedPayout,
@@ -1745,6 +1746,18 @@ fn payer_cap_total_key(invoice_id: u64, payer: &Address) -> (Symbol, u64, Addres
 /// Alias for `payer_cap_total_key` (issue #747).
 fn payer_total_key(invoice_id: u64, payer: &Address) -> (Symbol, u64, Address) {
     payer_cap_total_key(invoice_id, payer)
+}
+
+/// Issue #813: Creator-suggested per-payer amount for an invoice.
+/// Key: (Symbol "pay_hint", invoice_id) → i128
+fn payment_hint_key(invoice_id: u64) -> (Symbol, u64) {
+    (symbol_short!("pay_hint"), invoice_id)
+}
+
+/// Issue #816: Ledger timestamp at which an invoice was retired.
+/// Key: (Symbol "retired", invoice_id) → u64
+fn retired_at_key(invoice_id: u64) -> (Symbol, u64) {
+    (symbol_short!("retired"), invoice_id)
 }
 
 /// Issue #746: Cumulative basis points released so far via `release_partial`.
@@ -13940,6 +13953,212 @@ impl SplitContract {
         save_invoice(&env, invoice_id, &invoice);
         append_audit_entry(&env, invoice_id, symbol_short!("rebal"), &creator);
         events::recipients_rebalanced(&env, invoice_id, &remove_address, removed_amount);
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #813: Payment hints
+    // -----------------------------------------------------------------------
+
+    /// Set a suggested per-payer amount for a pending invoice. Only the
+    /// creator may call this. The hint must be positive and must not exceed
+    /// the invoice total.
+    pub fn set_payment_hint(env: Env, creator: Address, invoice_id: u64, suggested_amount: i128) {
+        require_not_paused(&env);
+        creator.require_auth();
+
+        let invoice = load_invoice(&env, invoice_id);
+        assert!(invoice.creator == creator, "only creator can set payment hint");
+        assert!(
+            invoice.status == InvoiceStatus::Pending,
+            "invoice is not pending"
+        );
+        let total: i128 = invoice.amounts.iter().sum();
+        assert!(
+            suggested_amount > 0 && suggested_amount <= total,
+            "invalid suggested amount"
+        );
+
+        env.storage()
+            .persistent()
+            .set(&payment_hint_key(invoice_id), &suggested_amount);
+        events::payment_hint_set(&env, invoice_id, &creator, suggested_amount);
+    }
+
+    /// Suggest how much a payer should contribute, assuming `num_payers`
+    /// payers share the remaining balance. Returns the creator's hint (capped
+    /// at the remaining balance) when one is set, otherwise the remaining
+    /// balance divided evenly (rounded up). Returns 0 once fully funded.
+    pub fn get_payment_hint(env: Env, invoice_id: u64, num_payers: u32) -> i128 {
+        assert!(num_payers > 0, "num_payers must be positive");
+        let invoice = load_invoice(&env, invoice_id);
+        let total: i128 = invoice.amounts.iter().sum();
+        let remaining = total - invoice.funded;
+        if remaining <= 0 {
+            return 0;
+        }
+        if let Some(hint) = env
+            .storage()
+            .persistent()
+            .get::<_, i128>(&payment_hint_key(invoice_id))
+        {
+            return hint.min(remaining);
+        }
+        let n = num_payers as i128;
+        (remaining + n - 1) / n
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #814: Recipient share redistribution
+    // -----------------------------------------------------------------------
+
+    /// Redistribute the invoice total across the current recipients according
+    /// to `weights_bps` (one entry per recipient, summing to 10 000). Only the
+    /// creator may call this, and only before any payment has been received.
+    /// Any integer-division remainder goes to the first recipient so the
+    /// invoice total is exactly preserved.
+    pub fn redistribute_shares(env: Env, creator: Address, invoice_id: u64, weights_bps: Vec<u32>) {
+        require_not_paused(&env);
+        creator.require_auth();
+
+        let mut invoice = load_invoice(&env, invoice_id);
+        assert!(invoice.creator == creator, "only creator can redistribute shares");
+        assert!(
+            invoice.status == InvoiceStatus::Pending,
+            "invoice is not pending"
+        );
+        assert!(!invoice.disputed, "invoice is disputed");
+        assert!(invoice.funded == 0, "payments already received");
+        assert!(
+            weights_bps.len() == invoice.recipients.len(),
+            "weights length mismatch"
+        );
+        let mut weight_sum: u32 = 0;
+        for w in weights_bps.iter() {
+            if w == 0 {
+                panic_with_error!(&env, ContractError::InvalidBps);
+            }
+            weight_sum += w;
+        }
+        if weight_sum != 10_000 {
+            panic_with_error!(&env, ContractError::InvalidBps);
+        }
+
+        let total: i128 = invoice.amounts.iter().sum();
+        let mut new_amounts: Vec<i128> = Vec::new(&env);
+        let mut distributed: i128 = 0;
+        for w in weights_bps.iter() {
+            let share = total * w as i128 / 10_000;
+            distributed += share;
+            new_amounts.push_back(share);
+        }
+        let first = new_amounts.get(0).unwrap();
+        new_amounts.set(0, first + (total - distributed));
+        for amt in new_amounts.iter() {
+            assert!(amt > 0, "amounts must be positive");
+        }
+
+        invoice.amounts = new_amounts.clone();
+        save_invoice(&env, invoice_id, &invoice);
+        append_audit_entry(&env, invoice_id, symbol_short!("redistr"), &creator);
+        events::shares_redistributed(&env, invoice_id, &creator, &new_amounts);
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #815: Creator earnings tracking
+    // -----------------------------------------------------------------------
+
+    /// Aggregate earnings for `creator` over invoice IDs `from_id..=to_id`
+    /// (at most 100 IDs per call), optionally filtered by status and token.
+    /// Missing IDs and invoices from other creators are skipped.
+    pub fn get_creator_earnings(
+        env: Env,
+        creator: Address,
+        from_id: u64,
+        to_id: u64,
+        status_filter: Option<InvoiceStatus>,
+        token_filter: Option<Address>,
+    ) -> CreatorEarnings {
+        assert!(from_id <= to_id, "invalid range");
+        assert!(to_id - from_id < 100, "range too large");
+
+        let mut earnings = CreatorEarnings {
+            invoice_count: 0,
+            total_amount: 0,
+            total_funded: 0,
+            total_released: 0,
+        };
+        for id in from_id..=to_id {
+            let key = invoice_key(id);
+            if !env.storage().persistent().has(&key) && !env.storage().instance().has(&key) {
+                continue;
+            }
+            let invoice = load_invoice(&env, id);
+            if invoice.creator != creator {
+                continue;
+            }
+            if let Some(status) = &status_filter {
+                if invoice.status != *status {
+                    continue;
+                }
+            }
+            if let Some(token) = &token_filter {
+                if invoice.funding_token != *token {
+                    continue;
+                }
+            }
+            earnings.invoice_count += 1;
+            earnings.total_amount += invoice.amounts.iter().sum::<i128>();
+            earnings.total_funded += invoice.funded;
+            if invoice.status == InvoiceStatus::Released {
+                earnings.total_released += invoice.funded;
+            }
+        }
+
+        events::creator_earnings_queried(
+            &env,
+            &creator,
+            earnings.invoice_count,
+            earnings.total_released,
+        );
+        earnings
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #816: Invoice retirement
+    // -----------------------------------------------------------------------
+
+    /// Retire a finalised (Released, Refunded, Cancelled or Expired) invoice.
+    /// The invoice record is kept intact and remains readable; retirement only
+    /// records the ledger timestamp so off-chain indexers can hide it. Only
+    /// the creator may retire, and each invoice can be retired once.
+    pub fn retire_invoice(env: Env, creator: Address, invoice_id: u64) {
+        require_not_paused(&env);
+        creator.require_auth();
+
+        let invoice = load_invoice(&env, invoice_id);
+        assert!(invoice.creator == creator, "only creator can retire invoice");
+        assert!(
+            matches!(
+                invoice.status,
+                InvoiceStatus::Released
+                    | InvoiceStatus::Refunded
+                    | InvoiceStatus::Cancelled
+                    | InvoiceStatus::Expired
+            ),
+            "invoice not finalised"
+        );
+        let key = retired_at_key(invoice_id);
+        assert!(!env.storage().persistent().has(&key), "invoice already retired");
+
+        let now = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &now);
+        append_audit_entry(&env, invoice_id, symbol_short!("retired"), &creator);
+        events::invoice_retired(&env, invoice_id, &creator, now);
+    }
+
+    /// Return the timestamp at which the invoice was retired, if any.
+    pub fn get_retired_at(env: Env, invoice_id: u64) -> Option<u64> {
+        env.storage().persistent().get(&retired_at_key(invoice_id))
     }
 
     // -----------------------------------------------------------------------

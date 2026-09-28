@@ -2095,6 +2095,76 @@ pub fn batch_created(env: &Env, creator: &Address, invoice_ids: &Vec<u64>, count
 }
 
 // ---------------------------------------------------------------------------
+// Issue #813: Payment hints
+// ---------------------------------------------------------------------------
+
+/// Emitted when the creator sets a suggested per-payer amount.
+///
+/// Topics: (split, pay_hint, invoice_id)
+/// Data:   (creator, suggested_amount)
+pub fn payment_hint_set(env: &Env, invoice_id: u64, creator: &Address, suggested_amount: i128) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("pay_hint"), invoice_id),
+        (creator.clone(), suggested_amount),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #814: Recipient share redistribution
+// ---------------------------------------------------------------------------
+
+/// Emitted when the creator redistributes the invoice total across recipients.
+///
+/// Topics: (split, redistr, invoice_id)
+/// Data:   (creator, new_amounts)
+pub fn shares_redistributed(
+    env: &Env,
+    invoice_id: u64,
+    creator: &Address,
+    new_amounts: &Vec<i128>,
+) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("redistr"), invoice_id),
+        (creator.clone(), new_amounts.clone()),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #815: Creator earnings tracking
+// ---------------------------------------------------------------------------
+
+/// Emitted when creator earnings are aggregated via `get_creator_earnings`.
+///
+/// Topics: (split, earnings, creator)
+/// Data:   (invoice_count, total_released)
+pub fn creator_earnings_queried(
+    env: &Env,
+    creator: &Address,
+    invoice_count: u32,
+    total_released: i128,
+) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("earnings"), creator.clone()),
+        (invoice_count, total_released),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #816: Invoice retirement
+// ---------------------------------------------------------------------------
+
+/// Emitted when a finalised invoice is retired (archived without deletion).
+///
+/// Topics: (split, retired, invoice_id)
+/// Data:   (creator, retired_at)
+pub fn invoice_retired(env: &Env, invoice_id: u64, creator: &Address, retired_at: u64) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("retired"), invoice_id),
+        (creator.clone(), retired_at),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests for the per-invoice event sequence counter (issue #708)
 // ---------------------------------------------------------------------------
 
