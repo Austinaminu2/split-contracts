@@ -82,6 +82,12 @@ mod storage;
 mod storage_keys;
 
 mod migrations;
+mod hold_ext;
+mod freeze_ext;
+mod treasury_multi_ext;
+mod velocity_ext;
+#[cfg(test)]
+mod ext_test_util;
 
 use error::ContractError;
 use validation::assert_valid_bps;
@@ -2497,11 +2503,13 @@ fn assert_not_paused(env: &Env) -> Result<(), ContractError> {
 
 fn require_not_paused(env: &Env) {
     migrations::require_schema_current(env);
+    freeze_ext::require_not_frozen_global(env);
     assert_not_paused(env).expect("contract is paused");
 }
 
 fn check_not_paused(env: &Env) {
     migrations::require_schema_current(env);
+    freeze_ext::require_not_frozen_global(env);
     if assert_not_paused(env).is_err() {
         panic!("ContractPaused");
     }
@@ -7811,7 +7819,10 @@ impl SplitContract {
                 .storage()
                 .persistent()
                 .has(&invoice_group_key(invoice_id));
+            // Issue #772: timestamp-based escrow hold forces a manual release() call.
+            let seconds_hold_active = hold_ext::on_fully_funded(env, invoice_id);
             let guarded = invoice.prerequisite_id.is_some()
+                || seconds_hold_active
                 || !invoice.tranches.is_empty()
                 || !invoice.release_stages.is_empty()
                 || in_group
@@ -8471,6 +8482,8 @@ impl SplitContract {
         // Capture funded total before and after mutation (used for milestone check below).
         let prev_funded = invoice.funded;
         invoice.funded += credited_amount;
+        // Issue #775: hourly funding velocity histogram.
+        velocity_ext::record(env, invoice_id, credited_amount);
 
         // Track lifetime contributions separately; never decremented on withdrawal/refund.
         let cumulative_key = cumulative_contributed_key(invoice_id);
@@ -9162,6 +9175,8 @@ impl SplitContract {
                 panic!("EscrowHoldActive");
             }
         }
+        // Issue #772: timestamp-based escrow hold.
+        hold_ext::enforce_release(&env, invoice_id);
         // Issue #325: block release while a payer dispute is active.
         if invoice.disputed {
             if let Some(record) = env
@@ -12742,6 +12757,7 @@ impl SplitContract {
     ///
     /// See `docs/GAS_OPTIMIZATIONS.md` for benchmarks.
     pub fn refund(env: Env, invoice_id: u64) {
+        freeze_ext::require_not_frozen_global(&env);
         // --- Reentrancy guard (issue #451-reentrancy) ---
         let re_key = reentrancy_lock_key();
         if env.storage().temporary().has(&re_key) {
@@ -13346,6 +13362,7 @@ impl SplitContract {
     /// A cancelled invoice permanently rejects `pay`, `release`, and `refund`.
     /// Emits `InvoiceCancelled { invoice_id, creator, timestamp }`.
     pub fn cancel_invoice(env: Env, caller: Address, invoice_id: u64) {
+        freeze_ext::require_not_frozen_global(&env);
         // --- Reentrancy guard (issue #451-reentrancy) ---
         let re_key = reentrancy_lock_key();
         if env.storage().temporary().has(&re_key) {
