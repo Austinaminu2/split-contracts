@@ -145,30 +145,13 @@ pub enum ContractError {
     AlreadyPaid = 65,
     /// Recipient list is shorter than the configured minimum recipient count.
     TooFewRecipients = 66,
-    /// Issue #776: pagination `limit` exceeds the maximum of 50.
-    LimitTooLarge = 80,
-    /// Issue #777: treasury governance config not set.
-    GovNotConfigured = 81,
-    /// Issue #777: proposal does not exist.
-    ProposalNotFound = 82,
-    /// Issue #777: voting period has ended.
-    VotingClosed = 83,
-    /// Issue #777: voting period has not ended.
-    VotingOpen = 84,
-    /// Issue #777: voter already voted on this proposal.
-    AlreadyVoted = 85,
-    /// Issue #777: proposal already executed or rejected.
-    ProposalFinalized = 86,
-    /// Issue #777: allocation list empty or amount not positive.
-    InvalidAllocation = 87,
-    /// Issue #777: voter has zero token balance.
-    NoVotingPower = 88,
-    /// Issue #778: replay-protection nonce was already consumed.
-    NonceAlreadyUsed = 89,
-    /// Issue #779: group does not exist.
-    GroupNotFound = 90,
-    /// Issue #779: group already holds the maximum of 20 invoices.
-    GroupFull = 91,
-    /// Issue #779: invoice is already a member of this group.
-    AlreadyInGroup = 92,
+    /// Issue #747: Payment would push a payer's running total past the per-payer
+    /// contribution cap (`max_contribution_per_payer`) set on the invoice.
+    ContributionCapExceeded = 67,
+    /// Issue #746: Basis points value is out of the valid range (1–10 000).
+    InvalidBps = 68,
+    /// Issue #744: Batch size exceeds the hard cap of 20 invoices per call.
+    BatchTooLarge = 69,
+    /// Issue #745: The invoice has already been expired and all payers refunded.
+    InvoiceExpired = 70,
 }

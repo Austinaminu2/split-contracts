@@ -179,6 +179,25 @@ pub fn upgrade(env: Env) {
 }
 ```
 
+## Additional key helpers (issues #748–#751)
+
+Newer entry points declare their keys through standalone helper functions in
+`contracts/split/src/lib.rs` rather than `StorageKey` variants. The keys added
+by issues #748–#751 are:
+
+| Key helper | XDR value | Tier | Value type | Purpose |
+|------------|-----------|------|------------|---------|
+| `treasury_balance_key()` | `0000000f000000077472735f62616c00` (`trs_bal`) | instance | `i128` | Issue #751: protocol fees withheld from payments, awaiting `withdraw_treasury` |
+
+The remaining functionality in this group introduces no new storage keys:
+
+- **#748** (templates with overrides) reuses `Template(creator, name)`,
+  `TemplateVersion(creator, name, version)` and `TemplateVersionCount(creator, name)`.
+- **#749** (payer whitelist) reuses the per-invoice `InvoiceExt` entry, where
+  `allowed_payers` already lives.
+- **#750** (clone lineage) reuses the per-invoice `parent_invoice_id` /
+  `clone_depth` fields; `get_lineage` is a pure read that walks them.
+
 ## Uniqueness Validation
 
 Unit tests in `storage_keys.rs` verify that:
@@ -192,3 +211,16 @@ Run tests with:
 ```sh
 cargo test --lib storage_keys
 ```
+
+## Persistent Storage: module-owned key enums
+
+Newer features keep their keys in small `#[contracttype]` enums that live next to
+their logic, so the shared `StorageKey` / `InvoiceKey` enums (50-variant Soroban
+limit) are not consumed.
+
+| Enum::Variant | Module | Issue | Value | Purpose |
+|---------------|--------|-------|-------|---------|
+| `AttestKey::Attestations(id)` | `attest_ext.rs` | #768 | Vec<Attestation> | Third-party attestations for an invoice (max 5) |
+| `DelegateKey::Delegates(id)` | `delegate_ext.rs` | #769 | Vec<Address> | Creator-appointed delegates (max 3) |
+| `TtlKey::ExtendedUntil(id)` | `ttl_ext.rs` | #770 | u32 | Ledger up to which the invoice TTL was last extended |
+| `TierKey::Tiers(id)` / `TierKey::Unlocked(id)` | `tiers_ext.rs` | #771 | Vec<FundingTier> / Vec<u32> | Funding tiers and indices of unlocked tiers |
