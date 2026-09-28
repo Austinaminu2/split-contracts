@@ -544,6 +544,11 @@ fn credit_key(payer: &Address) -> (Symbol, Address) {
     (symbol_short!("credit"), payer.clone())
 }
 
+/// Issue #792: the referrer credited with acquiring a user.
+fn acquisition_referrer_key(user: &Address) -> (Symbol, Address) {
+    (symbol_short!("acq_ref"), user.clone())
+}
+
 /// Per-address referral count key (issue #87).
 fn referral_count_key(referrer: &Address) -> (Symbol, Address) {
     (symbol_short!("ref_cnt"), referrer.clone())
@@ -3182,9 +3187,45 @@ impl SplitContract {
         events::contract_unpaused(&env, &admin);
     }
 
+    /// Issue #800: emergency stop for every invoice. Admin-only; sets the
+    /// contract-wide pause flag that `pay`, `release` and `refund` check, so no
+    /// payment moves and nothing is released until `resume_all_invoices`.
+    pub fn pause_all_invoices(env: Env, admin: Address) {
+        Self::pause(env.clone(), admin.clone());
+        events::invoice_system_paused(&env, &admin);
+    }
+
+    /// Issue #800: lift an emergency stop set by `pause_all_invoices`. Admin-only.
+    pub fn resume_all_invoices(env: Env, admin: Address) {
+        Self::unpause(env.clone(), admin.clone());
+        events::invoice_system_resumed(&env, &admin);
+    }
+
     /// Issue #328: Return the current pause state (read-only; available while paused).
     pub fn is_paused(env: Env) -> bool {
         is_paused(&env)
+    }
+
+    /// Issue #792: record that `new_user` was acquired through `referrer`.
+    /// One-time only, callable by `new_user`; a user cannot refer themselves.
+    pub fn register_acquisition(env: Env, new_user: Address, referrer: Address) {
+        require_not_paused(&env);
+        new_user.require_auth();
+        assert!(new_user != referrer, "cannot refer yourself");
+        let key = acquisition_referrer_key(&new_user);
+        assert!(
+            !env.storage().persistent().has(&key),
+            "acquisition already registered"
+        );
+        env.storage().persistent().set(&key, &referrer);
+        events::acquisition_registered(&env, &new_user, &referrer);
+    }
+
+    /// Issue #792: the referrer that acquired `user`, if one was registered.
+    pub fn get_acquisition_referrer(env: Env, user: Address) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&acquisition_referrer_key(&user))
     }
 
     /// Issue #470: Contribute funds toward an invoice with partial refund mechanism for overpayments.
@@ -12371,6 +12412,16 @@ impl SplitContract {
         );
         assert!(bps <= 10_000, "bps must be ≤ 10000");
         assert!(invoice.funded > 0, "no funds to refund");
+        // Issue #801: only while the invoice is still collecting — before its
+        // deadline and before it is fully funded.
+        assert!(
+            env.ledger().timestamp() < invoice.deadline,
+            "invoice deadline has passed"
+        );
+        assert!(
+            invoice.funded < invoice.amounts.iter().sum::<i128>(),
+            "invoice is fully funded"
+        );
 
         let token_client = token::Client::new(&env, &invoice.tokens.get(0).expect("no token"));
 
