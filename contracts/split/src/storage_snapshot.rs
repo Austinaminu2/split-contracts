@@ -290,11 +290,11 @@ fn storage_key_snapshot() {
     keys.push(("cosigner_thresh_key", hex_xdr(&env, cosigner_thresh_key(1))));
     keys.push(("cosign_key", hex_xdr(&env, cosign_key(1))));
 
-    // Issue #763: per-invoice history ring buffer key
-    keys.push(("history_key", hex_xdr(&env, history_key(1))));
+    // Issue #747: per-payer contribution cap running total (Symbol, u64, Address)
+    keys.push(("payer_cap_total_key", hex_xdr(&env, payer_cap_total_key(1, &a))));
 
-    // Issue #760: per-invoice milestone data key
-    keys.push(("milestone_data_key", hex_xdr(&env, milestone_data_key(1))));
+    // Issue #746: per-invoice cumulative released basis points (Symbol, u64)
+    keys.push(("total_released_bps_key", hex_xdr(&env, total_released_bps_key(1))));
 
     // Sort by key name for deterministic output
     keys.sort_by(|a, b| a.0.cmp(b.0));

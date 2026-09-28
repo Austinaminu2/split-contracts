@@ -533,27 +533,31 @@ pub fn ev_seq_key(invoice_id: u64) -> InvoiceKey {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #763: Per-invoice history ring buffer key
+// Issue #747: Per-payer contribution cap total
 // ---------------------------------------------------------------------------
 
-/// Per-invoice history ring buffer — persistent storage.
+/// Running total contributed by `payer` on `invoice_id` — persistent storage.
 ///
-/// Returns the [`InvoiceKey::InvoiceHistory`] variant for `invoice_id`.
-/// The stored value is a `Vec<HistoryEntry>` capped at
-/// [`types::HISTORY_RING_CAP`] entries.
-pub fn history_key(invoice_id: u64) -> InvoiceKey {
-    InvoiceKey::InvoiceHistory(invoice_id)
+/// Checked against `max_contribution_per_payer` on every `pay` call.
+/// Key: (Symbol "contrb_cap", invoice_id, payer) → i128
+pub fn payer_cap_total_key(invoice_id: u64, payer: &Address) -> (Symbol, u64, Address) {
+    (symbol_short!("cntrb_cap"), invoice_id, payer.clone())
+}
+
+/// Alias for `payer_cap_total_key` (issue #747).
+pub fn payer_total_key(invoice_id: u64, payer: &Address) -> (Symbol, u64, Address) {
+    payer_cap_total_key(invoice_id, payer)
 }
 
 // ---------------------------------------------------------------------------
-// Issue #760: Per-invoice milestone list key
+// Issue #746: Per-invoice total released basis points
 // ---------------------------------------------------------------------------
 
-/// Per-invoice milestone list — persistent storage.
+/// Cumulative basis points released so far via `release_partial` — persistent storage.
 ///
-/// Returns the [`InvoiceKey::MilestoneData`] variant for `invoice_id`.
-/// The stored value is a `Vec<Milestone>`.
-pub fn milestone_data_key(invoice_id: u64) -> InvoiceKey {
-    InvoiceKey::MilestoneData(invoice_id)
+/// Prevents the sum of partial releases from exceeding 10 000 bps (100%).
+/// Key: (Symbol "rel_bps", invoice_id) → u32
+pub fn total_released_bps_key(invoice_id: u64) -> (Symbol, u64) {
+    (symbol_short!("rel_bps"), invoice_id)
 }
 

@@ -1915,45 +1915,76 @@ pub fn deadline_extended(env: &Env, invoice_id: u64, old_deadline: u64, new_dead
 }
 
 // ---------------------------------------------------------------------------
-// Issue #762: Payment cooldown event
+// Issue #747: Per-payer contribution cap
 // ---------------------------------------------------------------------------
 
-/// Emitted when a payment is blocked by the per-payer cooldown window.
-/// Topics: (split, cd_act, invoice_id)
-/// Data: (payer, retry_after)
+/// Emitted when a payment is rejected because the payer would exceed their
+/// per-invoice contribution cap.
 ///
-/// `retry_after` is the Unix timestamp (seconds) after which the payer may
-/// try again.  Callers should subtract `env.ledger().timestamp()` to get
-/// the remaining wait in seconds.
-pub fn cooldown_active(env: &Env, invoice_id: u64, payer: &Address, retry_after: u64) {
+/// Topics: (split, cap_hit, invoice_id)
+/// Data:   (payer, cap)
+pub fn contribution_cap_hit(env: &Env, invoice_id: u64, payer: &Address, cap: i128) {
     env.events().publish(
-        (symbol_short!("split"), symbol_short!("cd_act"), invoice_id),
-        (payer.clone(), retry_after),
+        (symbol_short!("split"), symbol_short!("cap_hit"), invoice_id),
+        (payer.clone(), cap),
     );
 }
 
 // ---------------------------------------------------------------------------
-// Issue #760: Milestone events
+// Issue #746: Partial release
 // ---------------------------------------------------------------------------
 
-/// Emitted when a milestone's funds are released by `complete_milestone`.
-/// Topics: (split, ms_done, invoice_id)
-/// Data: (index, amount_released)
-pub fn milestone_completed(env: &Env, invoice_id: u64, index: u32, amount_released: i128) {
+/// Emitted when a partial release is executed via `release_partial`.
+///
+/// Topics: (split, part_rel, invoice_id)
+/// Data:   (bps, amount_released, remaining)
+pub fn partial_released(
+    env: &Env,
+    invoice_id: u64,
+    bps: u32,
+    amount_released: i128,
+    remaining: i128,
+) {
     env.events().publish(
-        (symbol_short!("split"), symbol_short!("ms_done"), invoice_id),
-        (index, amount_released),
+        (symbol_short!("split"), symbol_short!("part_rel"), invoice_id),
+        (bps, amount_released, remaining),
     );
 }
 
-/// Emitted when the next milestone becomes active after the previous one is
-/// completed.
-/// Topics: (split, ms_act, invoice_id)
-/// Data: index
-pub fn milestone_activated(env: &Env, invoice_id: u64, index: u32) {
+// ---------------------------------------------------------------------------
+// Issue #745: Invoice expiry auto-refund
+// ---------------------------------------------------------------------------
+
+/// Emitted when `trigger_expiry` successfully expires an invoice and refunds
+/// all payers in one atomic call.
+///
+/// Topics: (split, inv_exp, invoice_id)
+/// Data:   (refunded_count, total_refunded)
+pub fn invoice_expired_refunded(
+    env: &Env,
+    invoice_id: u64,
+    refunded_count: u32,
+    total_refunded: i128,
+) {
     env.events().publish(
-        (symbol_short!("split"), symbol_short!("ms_act"), invoice_id),
-        index,
+        (symbol_short!("split"), symbol_short!("inv_exp"), invoice_id),
+        (refunded_count, total_refunded),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #744: Batch invoice creation
+// ---------------------------------------------------------------------------
+
+/// Emitted once after a successful `batch_create_invoices` call carrying all
+/// newly created invoice IDs (in creation order) and the creator address.
+///
+/// Topics: (split, batch_crt)
+/// Data:   (creator, invoice_ids, count)
+pub fn batch_created(env: &Env, creator: &Address, invoice_ids: &Vec<u64>, count: u32) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("batch_crt")),
+        (creator.clone(), invoice_ids.clone(), count),
     );
 }
 
