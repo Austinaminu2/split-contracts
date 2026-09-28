@@ -216,6 +216,10 @@ pub enum InvoiceKey {
     /// Per-invoice event sequence counter — typed replacement for the former
     /// `(symbol_short!("ev_seq"), invoice_id)` inline key (issue #708).
     EvSeq(u64),
+    /// Issue #763: per-invoice history ring buffer — Vec<HistoryEntry>.
+    InvoiceHistory(u64),
+    /// Issue #760: per-invoice milestone list — Vec<Milestone>.
+    MilestoneData(u64),
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +394,8 @@ mod tests {
             InvoiceKey::PaidFlags(id), InvoiceKey::MilestoneFlags(id),
             InvoiceKey::ArchiveMarker(id), InvoiceKey::CreatedLedger(id),
             InvoiceKey::EvSeq(id),
+            InvoiceKey::InvoiceHistory(id),
+            InvoiceKey::MilestoneData(id),
         ];
         for i in 0..keys.len() {
             for j in (i + 1)..keys.len() {
