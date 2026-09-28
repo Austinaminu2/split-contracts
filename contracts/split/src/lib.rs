@@ -8166,7 +8166,12 @@ impl SplitContract {
         };
         let remaining = total - invoice.funded;
 
-        if invoice.require_kyc {
+        // Issue #783: custom validator contract, if attached to this invoice.
+        validator_ext::validate(env, invoice_id, payer, amount);
+
+        // Issue #781: admin-set KYC registry (`is_approved`) takes precedence; the
+        // legacy `is_verified` contract is only used when no registry is set.
+        if invoice.require_kyc && !compliance_ext::check_kyc(env, payer) {
             let kyc_contract: Address = env
                 .storage()
                 .persistent()
@@ -9313,6 +9318,63 @@ impl SplitContract {
         Self::_release(&env, invoice_id, &mut invoice, &caller);
     }
 
+    /// Issue #781: set the KYC registry consulted for `require_kyc` invoices (admin only).
+    pub fn set_kyc_registry(env: Env, admin: Address, registry: Address) {
+        let current = require_admin(&env);
+        assert!(current == admin, "NotAuthorized");
+        compliance_ext::set_registry(&env, &registry);
+    }
+
+    /// Issue #781: currently configured KYC registry, if any.
+    pub fn get_kyc_registry(env: Env) -> Option<Address> {
+        compliance_ext::get_registry(&env)
+    }
+
+    /// Issue #782: start a per-ledger payment stream toward an invoice.
+    pub fn start_stream(env: Env, invoice_id: u64, payer: Address, amount_per_ledger: i128) -> u64 {
+        stream_ext::start(&env, invoice_id, &payer, amount_per_ledger)
+    }
+
+    /// Issue #782: settle the amount accrued since the last settlement.
+    pub fn settle_stream(env: Env, stream_id: u64, payer: Address) {
+        stream_ext::settle(&env, stream_id, &payer);
+    }
+
+    /// Issue #782: cancel a stream, settling accrued amount immediately.
+    pub fn cancel_stream(env: Env, stream_id: u64, payer: Address) {
+        stream_ext::cancel(&env, stream_id, &payer);
+    }
+
+    /// Issue #782: read a stream.
+    pub fn get_stream(env: Env, stream_id: u64) -> stream_ext::Stream {
+        stream_ext::get_stream(&env, stream_id)
+    }
+
+    /// Issue #783: attach (or clear with `None`) a payment validator contract (creator only).
+    pub fn set_invoice_validator(env: Env, creator: Address, invoice_id: u64, validator: Option<Address>) {
+        validator_ext::set_validator(&env, &creator, invoice_id, validator);
+    }
+
+    /// Issue #783: validator attached to an invoice, if any.
+    pub fn get_invoice_validator(env: Env, invoice_id: u64) -> Option<Address> {
+        validator_ext::get_validator(&env, invoice_id)
+    }
+
+    /// Issue #780: attach a per-recipient `release_at` schedule (creator only).
+    pub fn set_recipient_schedule(env: Env, creator: Address, invoice_id: u64, release_ats: Vec<Option<u64>>) {
+        schedule_ext::set_schedule(&env, &creator, invoice_id, release_ats);
+    }
+
+    /// Issue #780: pay all scheduled recipients whose `release_at` has passed.
+    pub fn release_scheduled(env: Env, invoice_id: u64) {
+        schedule_ext::release_scheduled(&env, invoice_id);
+    }
+
+    /// Issue #780: recipients not yet paid under the schedule.
+    pub fn get_pending_recipients(env: Env, invoice_id: u64) -> Vec<Address> {
+        schedule_ext::pending_recipients(&env, invoice_id)
+    }
+
     /// Backwards-compatible release entry point.
     pub fn release(env: Env, invoice_id: u64) {
         let caller = env.current_contract_address();
@@ -9652,6 +9714,10 @@ impl SplitContract {
     }
 
     fn _release(env: &Env, invoice_id: u64, invoice: &mut Invoice, actor: &Address) {
+        // Issue #780: scheduled invoices are released via `release_scheduled`.
+        if schedule_ext::has_schedule(env, invoice_id) {
+            return;
+        }
         // Block release when invoice is under active dispute.
         if invoice.status == InvoiceStatus::Disputed {
             panic!("{}", ContractError::InvoiceDisputed as u32);
