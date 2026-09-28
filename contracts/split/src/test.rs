@@ -4488,7 +4488,7 @@ fn test_creator_stats_increments_on_operations() {
 
 
 #[test]
-#[should_panic(expected = "payment cooldown active")]
+#[should_panic(expected = "PaymentCooldownActive")]
 fn test_cooldown_blocks_same_payer_within_window() {
     let (env, contract_id, token_id) = setup_initialized();
     let c = client(&env, &contract_id);
