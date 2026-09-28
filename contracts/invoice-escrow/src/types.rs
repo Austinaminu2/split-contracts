@@ -103,6 +103,26 @@ pub struct EscrowReleased {
 // Payer Blacklist types
 // ──────────────────────────────────────────────────────────────────────
 
+// ──────────────────────────────────────────────────────────────────────
+// Invoice config versioning
+// ──────────────────────────────────────────────────────────────────────
+
+/// A snapshot of an invoice's mutable config, recorded before an update is
+/// applied via `update_invoice_config`. Lets creators evolve `total_amount`
+/// and `deadline` while preserving a full audit trail of prior versions.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct InvoiceConfigVersion {
+    /// Version number, starting at 1 for the invoice's original config.
+    pub version: u32,
+    /// `total_amount` in effect for this version.
+    pub total_amount: i128,
+    /// `deadline` in effect for this version.
+    pub deadline: u64,
+    /// Timestamp at which this version was superseded.
+    pub updated_at: u64,
+}
+
 /// Entry in the payer blacklist.
 ///
 /// When a payer is blacklisted by the admin, an entry is created with

@@ -9119,3 +9119,183 @@ fn test_contribution_cap_no_cap_set_no_restriction() {
     assert_eq!(c.get_payer_contribution_total(&id, &payer), 1000);
 }
 
+// ---------------------------------------------------------------------------
+// Issue #824: Creator commission tiers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_creator_tier_defaults_to_bronze() {
+    let (env, contract_id, _token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+
+    assert_eq!(c.get_creator_tier(&creator), types::CreatorTier::Bronze);
+    assert_eq!(c.get_creator_tier_commission_bps(&creator), 300);
+}
+
+#[test]
+fn test_set_creator_tier_updates_commission() {
+    let (env, contract_id, _token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    // `admin` is decorative on `set_creator_tier` — the real admin is read from
+    // storage and auth is mocked — so any address works here.
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+
+    c.set_creator_tier(&admin, &creator, &types::CreatorTier::Gold);
+
+    assert_eq!(c.get_creator_tier(&creator), types::CreatorTier::Gold);
+    assert_eq!(c.get_creator_tier_commission_bps(&creator), 100);
+}
+
+#[test]
+fn test_set_creator_tier_platinum_lowest_commission() {
+    let (env, contract_id, _token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+
+    c.set_creator_tier(&admin, &creator, &types::CreatorTier::Platinum);
+
+    assert_eq!(c.get_creator_tier_commission_bps(&creator), 50);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #826: verify_batch_payment_signatures
+// ---------------------------------------------------------------------------
+
+extern crate std;
+
+fn sign_payment_entry(
+    env: &Env,
+    seed: [u8; 32],
+    invoice_id: u64,
+    payer: &Address,
+    amount: i128,
+    nonce: u64,
+) -> types::SignedPayment {
+    use ed25519_dalek::Signer;
+
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let verifying_key = signing_key.verifying_key();
+
+    let msg = signed_payment_message(env, invoice_id, payer, amount, nonce);
+    let mut msg_bytes: std::vec::Vec<u8> = std::vec::Vec::new();
+    for b in msg.iter() {
+        msg_bytes.push(b);
+    }
+    let signature = signing_key.sign(&msg_bytes);
+
+    types::SignedPayment {
+        invoice_id,
+        payer: payer.clone(),
+        amount,
+        nonce,
+        signer_pubkey: BytesN::from_array(env, &verifying_key.to_bytes()),
+        signature: BytesN::from_array(env, &signature.to_bytes()),
+    }
+}
+
+#[test]
+fn test_verify_batch_payment_signatures_valid_batch() {
+    let (env, contract_id, _token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    let payer1 = Address::generate(&env);
+    let payer2 = Address::generate(&env);
+
+    let entry1 = sign_payment_entry(&env, [1u8; 32], 1, &payer1, 500, 0);
+    let entry2 = sign_payment_entry(&env, [2u8; 32], 2, &payer2, 750, 1);
+
+    let mut payments = Vec::new(&env);
+    payments.push_back(entry1);
+    payments.push_back(entry2);
+
+    assert!(c.verify_batch_payment_signatures(&payments));
+}
+
+#[test]
+#[should_panic]
+fn test_verify_batch_payment_signatures_tampered_amount_panics() {
+    let (env, contract_id, _token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    let payer = Address::generate(&env);
+    let mut entry = sign_payment_entry(&env, [3u8; 32], 1, &payer, 500, 0);
+    // Tamper the amount after signing -> signature no longer matches.
+    entry.amount = 999;
+
+    let mut payments = Vec::new(&env);
+    payments.push_back(entry);
+
+    c.verify_batch_payment_signatures(&payments);
+}
+
+#[test]
+#[should_panic]
+fn test_verify_batch_payment_signatures_wrong_pubkey_panics() {
+    let (env, contract_id, _token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    let payer = Address::generate(&env);
+    let mut entry = sign_payment_entry(&env, [4u8; 32], 1, &payer, 500, 0);
+    // Swap in an unrelated public key -> verification must fail.
+    let other_key = ed25519_dalek::SigningKey::from_bytes(&[5u8; 32]);
+    entry.signer_pubkey = BytesN::from_array(&env, &other_key.verifying_key().to_bytes());
+
+    let mut payments = Vec::new(&env);
+    payments.push_back(entry);
+
+    c.verify_batch_payment_signatures(&payments);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #828: get_recipient_earnings
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_get_recipient_earnings_uses_amounts_when_no_ratios_set() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let (recipients, amounts) = two_recipients(&env); // 600 / 400 -> 60/40 weight
+    let id = c.create_invoice(
+        &creator,
+        &recipients,
+        &amounts,
+        &token_id,
+        &9_999,
+        &default_options(&env),
+    );
+
+    let earnings = c.get_recipient_earnings(&id, &1000_i128);
+    assert_eq!(earnings.len(), 2);
+    let (addr0, amt0) = earnings.get(0).unwrap();
+    let (addr1, amt1) = earnings.get(1).unwrap();
+    assert_eq!(addr0, recipients.get(0).unwrap());
+    assert_eq!(addr1, recipients.get(1).unwrap());
+    assert_eq!(amt0, 600);
+    assert_eq!(amt1, 400);
+}
+
+#[test]
+fn test_get_recipient_earnings_zero_amount() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let (recipients, amounts) = two_recipients(&env);
+    let id = c.create_invoice(
+        &creator,
+        &recipients,
+        &amounts,
+        &token_id,
+        &9_999,
+        &default_options(&env),
+    );
+
+    let earnings = c.get_recipient_earnings(&id, &0_i128);
+    for (_, amt) in earnings.iter() {
+        assert_eq!(amt, 0);
+    }
+}
+

@@ -89,15 +89,16 @@ const MAX_PARENT_DEPTH: u32 = 10;
 use types::{
     AdminAction, AdminRole, AdminSet, AuditEntry, Bid, CircuitBreakerStatus,
     CloneOverrides, CompactInvoice, CompactMigrateResult, CompletionProof, ComputeEstimate,
-    ConfidentialPayment, ContributionResult, CreateInvoiceParams, CreatorStats, DelayedPayout,
+    ConfidentialPayment, ContributionResult, CreateInvoiceParams, CreatorStats, CreatorTier,
+    DelayedPayout,
     DisputeOutcome, DisputeRecord, DisputeStatus, FeeBracket, FeeSplit, FeeTier, InstalmentPlan,
     Invoice, InvoiceCore, InvoiceExt, InvoiceExt2, InvoiceExt3, InvoiceHot, InvoiceOptions,
     InvoiceOptions2, InvoicePayment, InvoiceStats, InvoiceStatus, InvoiceTemplate,
     InvoiceTemplateRecord, LegacyInvoice, OverflowBehavior, OverfundingPolicy, Payment,
     PaymentCertificate, PaymentCommitment, PaymentProof, PaymentRecord, PendingAdminAction,
     ProtocolFeeConfig, QueuedAction, RebateTier, Recipient, RepScore, ResolveAction,
-    ResolveRule, Role, SimulateReleaseResult, SplitRule, SubscriptionParams, TimelockAction,
-    Tombstone, Tranche, TransferRecord, TreasuryRecord, UpgradeProposal,
+    ResolveRule, Role, SignedPayment, SimulateReleaseResult, SplitRule, SubscriptionParams,
+    TimelockAction, Tombstone, Tranche, TransferRecord, TreasuryRecord, UpgradeProposal,
 };
 
 // ---------------------------------------------------------------------------
@@ -856,6 +857,21 @@ fn creator_volume_used_key(creator: &Address) -> (Symbol, Address) {
 
 fn fee_tiers_key() -> Symbol {
     symbol_short!("fee_trs")
+}
+
+/// Issue #824: Per-creator explicit commission tier — persistent storage.
+fn creator_tier_key(creator: &Address) -> (Symbol, Address) {
+    (symbol_short!("cr_tier"), creator.clone())
+}
+
+/// Issue #824: Commission rate (basis points) charged for each creator tier.
+fn tier_commission_bps(tier: &CreatorTier) -> u32 {
+    match tier {
+        CreatorTier::Bronze => 300,   // 3.00%
+        CreatorTier::Silver => 200,   // 2.00%
+        CreatorTier::Gold => 100,     // 1.00%
+        CreatorTier::Platinum => 50,  // 0.50%
+    }
 }
 
 fn pending_admin_key() -> Symbol {
@@ -2723,6 +2739,45 @@ fn compute_payment_fingerprint(
     env.crypto().sha256(&input).into()
 }
 
+// ---------------------------------------------------------------------------
+// Issue #826: Batch payment signature verification
+// ---------------------------------------------------------------------------
+
+/// Build the canonical message signed for a `SignedPayment` batch entry:
+/// `invoice_id (BE) || payer (XDR) || amount (BE) || nonce (BE)`.
+fn signed_payment_message(
+    env: &Env,
+    invoice_id: u64,
+    payer: &Address,
+    amount: i128,
+    nonce: u64,
+) -> Bytes {
+    let mut msg = Bytes::new(env);
+    for byte in invoice_id.to_be_bytes().iter() {
+        msg.push_back(*byte);
+    }
+    let payer_val: Val = payer.clone().into_val(env);
+    let payer_bytes = payer_val.to_xdr(env);
+    for byte in payer_bytes.iter() {
+        msg.push_back(byte);
+    }
+    for byte in amount.to_be_bytes().iter() {
+        msg.push_back(*byte);
+    }
+    for byte in nonce.to_be_bytes().iter() {
+        msg.push_back(*byte);
+    }
+    msg
+}
+
+/// Verify the Ed25519 signature on a single signed payment entry.
+/// Panics (via the host's crypto error) if the signature does not verify.
+fn verify_signed_payment(env: &Env, entry: &SignedPayment) {
+    let msg = signed_payment_message(env, entry.invoice_id, &entry.payer, entry.amount, entry.nonce);
+    env.crypto()
+        .ed25519_verify(&entry.signer_pubkey, &msg, &entry.signature);
+}
+
 /// Check if payment fingerprint exists (duplicate detection).
 #[allow(dead_code)]
 fn check_duplicate_payment(env: &Env, fingerprint: &BytesN<32>) -> bool {
@@ -4480,6 +4535,41 @@ impl SplitContract {
             .unwrap()
     }
 
+    // -----------------------------------------------------------------------
+    // Issue #828: Recipient earnings distribution helper
+    // -----------------------------------------------------------------------
+
+    /// Preview what each recipient of `invoice_id` would earn if `amount`
+    /// were distributed right now, without mutating any state.
+    ///
+    /// Uses the invoice's configured split ratios (`ratios` / `ratio_denominator`)
+    /// when set; otherwise falls back to weighting recipients by their
+    /// configured `amounts`.
+    pub fn get_recipient_earnings(env: Env, invoice_id: u64, amount: i128) -> Vec<(Address, i128)> {
+        let invoice = load_invoice(&env, invoice_id);
+
+        let (ratios, denom): (Vec<i128>, i128) = if !invoice.ratios.is_empty() {
+            let mut r = Vec::new(&env);
+            for bps in invoice.ratios.iter() {
+                r.push_back(bps as i128);
+            }
+            (r, invoice.ratio_denominator as i128)
+        } else {
+            let mut r = Vec::new(&env);
+            let mut sum: i128 = 0;
+            for amt in invoice.amounts.iter() {
+                r.push_back(amt);
+                sum += amt;
+            }
+            (r, sum)
+        };
+
+        match calc::compute_recipient_earnings(&env, &invoice.recipients, amount, &ratios, denom) {
+            Ok(earnings) => earnings,
+            Err(e) => panic_with_error!(env, e),
+        }
+    }
+
     /// Preview the next invoice id that will be assigned by create_invoice.
     pub fn peek_next_invoice_id(env: Env) -> u64 {
         env.storage()
@@ -4553,6 +4643,63 @@ impl SplitContract {
             .instance()
             .get(&fee_tiers_key())
             .unwrap_or(Vec::new(&env))
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #824: Explicit creator commission tiers
+    // -----------------------------------------------------------------------
+
+    /// Assign a creator to an explicit commission tier. Admin-only.
+    ///
+    /// Unlike [`Self::set_fee_tiers`] (which derives a fee automatically from
+    /// lifetime volume), this lets an admin grant a specific commission rate
+    /// to a creator directly, regardless of their volume.
+    pub fn set_creator_tier(env: Env, admin: Address, creator: Address, tier: CreatorTier) {
+        let _admin_addr = require_admin(&env);
+        let _ = admin;
+
+        env.storage()
+            .persistent()
+            .set(&creator_tier_key(&creator), &tier);
+        events::creator_tier_updated(&env, &creator, &tier);
+    }
+
+    /// Return the creator's assigned tier, defaulting to `Bronze` when no
+    /// tier has been explicitly set.
+    pub fn get_creator_tier(env: Env, creator: Address) -> CreatorTier {
+        env.storage()
+            .persistent()
+            .get(&creator_tier_key(&creator))
+            .unwrap_or(CreatorTier::Bronze)
+    }
+
+    /// Return the commission rate (basis points) for a creator's assigned tier.
+    pub fn get_creator_tier_commission_bps(env: Env, creator: Address) -> u32 {
+        let tier = Self::get_creator_tier(env, creator);
+        tier_commission_bps(&tier)
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #826: Batch payment signature verification
+    // -----------------------------------------------------------------------
+
+    /// Verify Ed25519 signatures for a batch of signed payment instructions.
+    ///
+    /// Each entry's signature must verify over the canonical encoding of
+    /// `(invoice_id, payer, amount, nonce)` using its declared
+    /// `signer_pubkey`. Intended as a building block for relayed / meta-tx
+    /// multi-pay flows: a relayer collects payer-signed payment intents
+    /// off-chain and this function lets the contract (or caller) confirm
+    /// authenticity before executing the corresponding payments.
+    ///
+    /// Returns `true` if every signature in the batch verifies; panics on
+    /// the first invalid signature encountered.
+    pub fn verify_batch_payment_signatures(env: Env, payments: Vec<SignedPayment>) -> bool {
+        for entry in payments.iter() {
+            verify_signed_payment(&env, &entry);
+        }
+        events::batch_signatures_verified(&env, payments.len());
+        true
     }
 
     pub fn claim_fallback(env: Env, recipient: Address, invoice_id: u64) {

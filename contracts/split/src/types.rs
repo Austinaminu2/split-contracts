@@ -163,6 +163,36 @@ pub struct Bid {
     pub amount: i128,
 }
 
+/// Issue #824: Explicit creator commission tier, assigned directly by an
+/// admin. Distinct from the volume-based [`FeeTier`] system, which derives a
+/// fee automatically from a creator's lifetime volume — `CreatorTier` lets an
+/// admin grant a specific commission rate regardless of volume (e.g. for
+/// partners or promotional arrangements).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum CreatorTier {
+    Bronze,
+    Silver,
+    Gold,
+    Platinum,
+}
+
+/// Issue #826: A single payer-signed payment instruction used for batch
+/// signature verification ahead of relayed / meta-transaction multi-pay
+/// flows. The signature is an Ed25519 signature (produced off-chain by
+/// `payer`, whose public key is `signer_pubkey`) over the canonical encoding
+/// of `(invoice_id, payer, amount, nonce)`.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct SignedPayment {
+    pub invoice_id: u64,
+    pub payer: Address,
+    pub amount: i128,
+    pub nonce: u64,
+    pub signer_pubkey: BytesN<32>,
+    pub signature: BytesN<64>,
+}
+
 // ---------------------------------------------------------------------------
 // Invoice status
 // ---------------------------------------------------------------------------

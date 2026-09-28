@@ -26,7 +26,7 @@
 //! dynamically.
 
 use crate::storage_keys::ev_seq_key;
-use crate::types::{DisputeOutcome, FeeSplit, InvoicePhase, InvoiceStatus, OverfundingPolicy, RepScore, TimelockAction};
+use crate::types::{CreatorTier, DisputeOutcome, FeeSplit, InvoicePhase, InvoiceStatus, OverfundingPolicy, RepScore, TimelockAction};
 use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, String, Vec};
 
 // ---------------------------------------------------------------------------
@@ -1985,6 +1985,59 @@ pub fn batch_created(env: &Env, creator: &Address, invoice_ids: &Vec<u64>, count
     env.events().publish(
         (symbol_short!("split"), symbol_short!("batch_crt")),
         (creator.clone(), invoice_ids.clone(), count),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #824: Creator commission tier
+// ---------------------------------------------------------------------------
+
+/// Emitted when an admin assigns or updates a creator's explicit commission tier.
+///
+/// Topics: (split, tier_upd)
+/// Data:   (creator, tier_code) — tier_code: 0=Bronze, 1=Silver, 2=Gold, 3=Platinum
+pub fn creator_tier_updated(env: &Env, creator: &Address, tier: &CreatorTier) {
+    let tier_code: u32 = match tier {
+        CreatorTier::Bronze => 0,
+        CreatorTier::Silver => 1,
+        CreatorTier::Gold => 2,
+        CreatorTier::Platinum => 3,
+    };
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("tier_upd")),
+        (creator.clone(), tier_code),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #826: Batch payment signature verification
+// ---------------------------------------------------------------------------
+
+/// Emitted after a batch of signed payment instructions has all been verified
+/// successfully via `verify_batch_payment_signatures`.
+///
+/// Topics: (split, sig_batch)
+/// Data:   count — number of entries verified in the batch
+pub fn batch_signatures_verified(env: &Env, count: u32) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("sig_batch")),
+        count,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #827: Invoice config versioning
+// ---------------------------------------------------------------------------
+
+/// Emitted when a creator updates an invoice's mutable config (amounts /
+/// deadline) via `update_invoice_config`, producing a new version entry.
+///
+/// Topics: (split, cfg_upd, invoice_id)
+/// Data:   (new_version, new_deadline)
+pub fn invoice_config_updated(env: &Env, invoice_id: u64, new_version: u32, new_deadline: u64) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("cfg_upd"), invoice_id),
+        (new_version, new_deadline),
     );
 }
 
