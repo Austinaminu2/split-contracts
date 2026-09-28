@@ -9119,3 +9119,148 @@ fn test_contribution_cap_no_cap_set_no_restriction() {
     assert_eq!(c.get_payer_contribution_total(&id, &payer), 1000);
 }
 
+
+// ---------------------------------------------------------------------------
+// Issues #813, #814, #815, #816
+// ---------------------------------------------------------------------------
+
+fn two_recipient_invoice(
+    env: &Env,
+    c: &SplitContractClient,
+    creator: &Address,
+    token_id: &Address,
+    a: i128,
+    b: i128,
+) -> u64 {
+    let mut recipients = Vec::new(env);
+    recipients.push_back(Address::generate(env));
+    recipients.push_back(Address::generate(env));
+    let mut amounts = Vec::new(env);
+    amounts.push_back(a);
+    amounts.push_back(b);
+    c.create_invoice(creator, &recipients, &amounts, token_id, &9_999_u64, &default_options(env))
+}
+
+#[test]
+fn test_payment_hint_even_split_and_creator_hint() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1_000);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(&env, &c, &creator, &Address::generate(&env), 100, &token_id, 9_999);
+    assert_eq!(c.get_payment_hint(&id, &3), 34);
+
+    c.set_payment_hint(&creator, &id, &40);
+    assert_eq!(c.get_payment_hint(&id, &3), 40);
+
+    c.pay(&payer, &id, &70_i128, &0_u64, &false, &false, &None);
+    assert_eq!(c.get_payment_hint(&id, &3), 30);
+}
+
+#[test]
+#[should_panic(expected = "invalid suggested amount")]
+fn test_payment_hint_rejects_amount_above_total() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &creator, &Address::generate(&env), 100, &token_id, 9_999);
+    c.set_payment_hint(&creator, &id, &101);
+}
+
+#[test]
+fn test_redistribute_shares_preserves_total() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+    let id = two_recipient_invoice(&env, &c, &creator, &token_id, 50, 51);
+
+    let mut weights = Vec::new(&env);
+    weights.push_back(3_333_u32);
+    weights.push_back(6_667_u32);
+    c.redistribute_shares(&creator, &id, &weights);
+
+    let amounts = c.get_invoice(&id).amounts;
+    assert_eq!(amounts.get(1).unwrap(), 67);
+    assert_eq!(amounts.get(0).unwrap(), 34);
+}
+
+#[test]
+#[should_panic]
+fn test_redistribute_shares_rejects_bad_weight_sum() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+    let id = two_recipient_invoice(&env, &c, &creator, &token_id, 50, 50);
+
+    let mut weights = Vec::new(&env);
+    weights.push_back(5_000_u32);
+    weights.push_back(4_000_u32);
+    c.redistribute_shares(&creator, &id, &weights);
+}
+
+#[test]
+fn test_creator_earnings_with_filters() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let other = Address::generate(&env);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1_000);
+    env.ledger().set_timestamp(1_000);
+
+    let id1 = make_invoice(&env, &c, &creator, &Address::generate(&env), 100, &token_id, 9_999);
+    let id2 = make_invoice(&env, &c, &creator, &Address::generate(&env), 200, &token_id, 9_999);
+    make_invoice(&env, &c, &other, &Address::generate(&env), 300, &token_id, 9_999);
+    c.pay(&payer, &id1, &100_i128, &0_u64, &false, &false, &None);
+    c.pay(&payer, &id2, &50_i128, &0_u64, &false, &false, &None);
+
+    let all = c.get_creator_earnings(&creator, &1, &10, &None, &None);
+    assert_eq!(all.invoice_count, 2);
+    assert_eq!(all.total_amount, 300);
+    assert_eq!(all.total_funded, 150);
+    assert_eq!(all.total_released, 100);
+
+    let pending = c.get_creator_earnings(&creator, &1, &10, &Some(InvoiceStatus::Pending), &None);
+    assert_eq!(pending.invoice_count, 1);
+    assert_eq!(pending.total_funded, 50);
+
+    let unknown = Some(Address::generate(&env));
+    let other_token = c.get_creator_earnings(&creator, &1, &10, &None, &unknown);
+    assert_eq!(other_token.invoice_count, 0);
+}
+
+#[test]
+fn test_retire_released_invoice_keeps_record() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let payer = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1_000);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(&env, &c, &creator, &Address::generate(&env), 100, &token_id, 9_999);
+    c.pay(&payer, &id, &100_i128, &0_u64, &false, &false, &None);
+    assert_eq!(c.get_retired_at(&id), None);
+
+    env.ledger().set_timestamp(2_000);
+    c.retire_invoice(&creator, &id);
+    assert_eq!(c.get_retired_at(&id), Some(2_000));
+    assert_eq!(c.get_invoice(&id).status, InvoiceStatus::Released);
+}
+
+#[test]
+#[should_panic(expected = "invoice not finalised")]
+fn test_retire_pending_invoice_panics() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &creator, &Address::generate(&env), 100, &token_id, 9_999);
+    c.retire_invoice(&creator, &id);
+}
