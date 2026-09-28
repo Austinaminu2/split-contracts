@@ -1372,18 +1372,56 @@ pub fn role_revoked(env: &Env, grantee: &Address, role_discriminant: u32, admin:
     );
 }
 
-/// Issue #474: Emitted when a creator cancels an open invoice and all contributors are refunded.
+/// Issue #474 / #757: Emitted when a creator cancels an invoice before any payment is made.
+///
+/// Spec: `InvoiceCancelled { invoice_id, creator, timestamp }`.
 /// Topics: (split, inv_cncl, invoice_id)
-/// Data: (creator, total_refunded, ledger)
-#[allow(dead_code)]
-pub fn invoice_cancelled(env: &Env, invoice_id: u64, creator: &Address, total_refunded: i128) {
+/// Data: (creator, timestamp)
+pub fn invoice_cancelled(env: &Env, invoice_id: u64, creator: &Address) {
     env.events().publish(
         (
             symbol_short!("split"),
             symbol_short!("inv_cncl"),
             invoice_id,
         ),
-        (creator.clone(), total_refunded, env.ledger().sequence()),
+        (creator.clone(), env.ledger().timestamp()),
+    );
+}
+
+/// Issue #756: Emitted when the invoice creator posts a new on-chain note.
+///
+/// Spec: `NoteAdded { invoice_id, index, timestamp }`.
+/// Topics: (split, note_add, invoice_id)
+/// Data: (index, timestamp)
+pub fn note_added(env: &Env, invoice_id: u64, index: u32) {
+    env.events().publish(
+        (
+            symbol_short!("split"),
+            symbol_short!("note_add"),
+            invoice_id,
+        ),
+        (index, env.ledger().timestamp()),
+    );
+}
+
+/// Issue #758: Emitted when a subscription cycle is triggered and a new invoice is created.
+///
+/// Spec: `SubscriptionTriggered { subscription_id, new_invoice_id, next_due }`.
+/// Topics: (split, sub_trig, subscription_id)
+/// Data: (new_invoice_id, next_due)
+pub fn subscription_triggered(
+    env: &Env,
+    subscription_id: u64,
+    new_invoice_id: u64,
+    next_due: u64,
+) {
+    env.events().publish(
+        (
+            symbol_short!("split"),
+            symbol_short!("sub_trig"),
+            subscription_id,
+        ),
+        (new_invoice_id, next_due),
     );
 }
 
