@@ -237,6 +237,7 @@ Creates a new invoice. Returns the auto-incremented invoice ID.
 | `cross_chain_ref` | `Option<String>` | Cross-chain reference identifier |
 | `allowed_payers` | `Option<Vec<Address>>` | Restrict payments to this allowlist; `None` = open |
 | `payment_cooldown_secs` | `Option<u64>` | Per-payer cooldown window in seconds |
+| `milestone_list` | `Option<Vec<Milestone>>` | Ordered milestone plan (max 10) for sequential unlocking; only the active milestone accepts payments |
 | `max_payments_per_window` | `Option<u32>` | Max payments per payer per window |
 | `payment_window_secs` | `Option<u64>` | Window duration for payment rate limiting |
 | `priorities` | `Vec<u32>` | Per-recipient release priority ordering |
@@ -331,6 +332,25 @@ pub fn migrate_invoice(env: Env, admin: Address, invoice_id: u64)
 ```
 
 Admin-only: migrates a legacy invoice format to the current schema.
+
+### `complete_milestone`
+
+```rust
+pub fn complete_milestone(env: Env, invoice_id: u64, creator: Address, index: u32)
+```
+
+Creator-only: releases the active milestone's `target_amount` to the recipients, pro-rata
+by `amounts[]`, marks milestone `index` as `Completed`, and activates the next milestone.
+
+Milestones are configured at creation through `InvoiceOptions.ext.milestone_list` (max 10
+entries); only the first is `Active` initially and each subsequent one transitions
+`Pending → Active` as its predecessor is completed. While a milestone plan is set, only
+the active milestone accepts payments.
+
+Panics if the caller is not the invoice creator, the invoice is not `Pending`, or `index`
+does not refer to the currently active milestone (`"milestone is not active"`). Emits
+`MilestoneCompleted { invoice_id, index, amount_released }` and, when a further milestone
+exists, `MilestoneActivated { invoice_id, index }`.
 
 ---
 
@@ -1041,6 +1061,27 @@ pub fn get_audit_log(env: Env, id: u64) -> Vec<AuditEntry>
 ```
 
 Returns the ordered list of `{ action, actor, timestamp }` entries for an invoice.
+
+### `get_active_milestone`
+
+```rust
+pub fn get_active_milestone(env: Env, invoice_id: u64) -> u32
+```
+
+Returns the 0-based index of the currently active milestone. Panics with
+`"no active milestone"` if the invoice has no milestone plan or every milestone has
+already been completed.
+
+### `get_history`
+
+```rust
+pub fn get_history(env: Env, invoice_id: u64) -> Vec<HistoryEntry>
+```
+
+Returns the per-invoice history ring buffer in chronological order. The buffer retains
+the most recent 20 entries (`{ event_type, timestamp, actor, amount }`); once full, the
+oldest entry is evicted before the new one is appended. Entries are written by `pay`,
+`release`, `refund`, `cancel`, `clone`, milestone completion, and dispute operations.
 
 ### `get_receipt_token`
 

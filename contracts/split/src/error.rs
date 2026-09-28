@@ -145,12 +145,13 @@ pub enum ContractError {
     AlreadyPaid = 65,
     /// Recipient list is shorter than the configured minimum recipient count.
     TooFewRecipients = 66,
-    /// Issue #750: an `Expired` or `Refunded` invoice cannot be cloned — both
-    /// are terminal states, so a clone would have no live payment state to
-    /// inherit.
-    CannotCloneTerminalInvoice = 67,
-    /// Issue #749: the payer is not present in the invoice's payer whitelist
-    /// (`allowed_payers`). Only addresses added via `add_to_whitelist` (or the
-    /// whitelist supplied at creation) may fund the invoice.
-    PayerNotWhitelisted = 68,
+    /// Issue #747: Payment would push a payer's running total past the per-payer
+    /// contribution cap (`max_contribution_per_payer`) set on the invoice.
+    ContributionCapExceeded = 67,
+    /// Issue #746: Basis points value is out of the valid range (1–10 000).
+    InvalidBps = 68,
+    /// Issue #744: Batch size exceeds the hard cap of 20 invoices per call.
+    BatchTooLarge = 69,
+    /// Issue #745: The invoice has already been expired and all payers refunded.
+    InvoiceExpired = 70,
 }
